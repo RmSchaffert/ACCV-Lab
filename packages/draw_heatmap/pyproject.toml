@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel", "torch>=2.0.0", "ninja"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "accvlab.draw_heatmap"
+version = "0.1.0"
+description = "Draw Heatmap Package (part of the ACCV-Lab package)."
+requires-python = ">=3.8"
+dependencies = [
+    "torch>=2.0.0",
+    "accvlab.batching_helpers>=0.1.0",
+    "accvlab-build-config>=0.1.0",
+]
+
+[project.optional-dependencies]
+optional = [
+    "pytest",
+    "shapely",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["accvlab.draw_heatmap*"]

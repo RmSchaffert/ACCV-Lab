@@ -1,0 +1,373 @@
+#!/bin/bash
+
+# Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Unified script to install or build wheels for all namespace packages
+# Usage: ./package_manager.sh {install|wheel} [OPTIONS]
+# 
+# Install mode: ./package_manager.sh install [-e] [--optional]
+#   -e  Install in editable mode
+#   --optional  Install with optional dependencies
+# 
+# Wheel mode: ./package_manager.sh wheel [-o OUTPUT_DIR] [--no-deps] [--no-index] [--optional]
+#   -o OUTPUT_DIR  Specify output directory for wheels (default: ./wheels)
+#   --no-deps  Skip dependency resolution (use current environment)
+#   --no-index  Don't use PyPI index (use current environment only)
+#   --optional  Build wheels with optional dependencies
+
+# Get script directory and project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Function to show usage
+show_usage() {
+    echo "Usage: $0 {install|wheel} [OPTIONS]"
+    echo ""
+    echo "Install mode:"
+    echo "  $0 install [-e] [--optional]"
+    echo "    -e  Install in editable mode"
+    echo "    --optional  Install with optional dependencies"
+    echo "    Default: Install in regular (non-editable) mode with basic dependencies"
+    echo ""
+    echo "Wheel mode:"
+    echo "  $0 wheel [-o OUTPUT_DIR] [--no-deps] [--no-index] [--optional]"
+    echo "    -o OUTPUT_DIR  Specify output directory for wheels (default: ./wheels)"
+    echo "    --no-deps  Skip dependency resolution (use current environment)"
+    echo "    --no-index  Don't use PyPI index (use current environment only)"
+    echo "    --optional  Build wheels with optional dependencies"
+    echo "    Default: Build regular (non-editable) wheels with basic dependencies"
+    echo ""
+    echo "This script manages all namespace packages defined in namespace_packages_config.py"
+    echo ""
+    echo "Examples:"
+    echo "  $0 install                    # Install all packages with basic dependencies"
+    echo "  $0 install -e                 # Install all packages in editable mode"
+    echo "  $0 install --optional         # Install all packages with optional dependencies"
+    echo "  $0 install -e --optional      # Install all packages in editable mode with optional dependencies"
+    echo "  $0 wheel                      # Build wheels for all packages"
+    echo "  $0 wheel -e                   # Build editable wheels"
+    echo "  $0 wheel --optional           # Build wheels with optional dependencies"
+    echo "  $0 wheel -o /tmp              # Build wheels in /tmp directory"
+    echo "  $0 wheel --no-deps            # Build wheels without downloading dependencies"
+    echo "  $0 wheel --no-index --no-deps # Build wheels using only current environment"
+}
+
+# Check if mode is provided
+if [[ $# -eq 0 ]]; then
+    echo "Error: No mode specified"
+    show_usage
+    exit 1
+fi
+
+MODE="$1"
+shift
+
+# Validate mode
+if [[ "$MODE" != "install" && "$MODE" != "wheel" ]]; then
+    echo "Error: Invalid mode '$MODE'. Must be 'install' or 'wheel'"
+    show_usage
+    exit 1
+fi
+
+# Parse command line arguments
+EDITABLE_MODE=false
+OUTPUT_DIR=""
+NO_DEPS=false
+NO_INDEX=false
+OPTIONAL_DEPS=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -e)
+            if [[ "$MODE" == "wheel" ]]; then
+                echo "Error: -e (editable) is not supported in wheel mode"
+                show_usage
+                exit 1
+            fi
+            EDITABLE_MODE=true
+            shift
+            ;;
+        -o)
+            if [[ "$MODE" != "wheel" ]]; then
+                echo "Error: -o option is only valid for wheel mode"
+                show_usage
+                exit 1
+            fi
+            if [[ -n "$2" && "$2" != -* ]]; then
+                OUTPUT_DIR="$2"
+                shift 2
+            else
+                echo "Error: -o requires an output directory argument"
+                show_usage
+                exit 1
+            fi
+            ;;
+        --no-deps)
+            if [[ "$MODE" != "wheel" ]]; then
+                echo "Error: --no-deps option is only valid for wheel mode"
+                show_usage
+                exit 1
+            fi
+            NO_DEPS=true
+            shift
+            ;;
+        --no-index)
+            if [[ "$MODE" != "wheel" ]]; then
+                echo "Error: --no-index option is only valid for wheel mode"
+                show_usage
+                exit 1
+            fi
+            NO_INDEX=true
+            shift
+            ;;
+        --optional)
+            OPTIONAL_DEPS=true
+            shift
+            ;;
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            show_usage
+            exit 1
+            ;;
+    esac
+done
+
+# Set default output directory for wheel mode
+if [[ "$MODE" == "wheel" && -z "$OUTPUT_DIR" ]]; then
+    OUTPUT_DIR="$PROJECT_ROOT/wheels"
+fi
+
+# Create output directory for wheel mode if it doesn't exist
+if [[ "$MODE" == "wheel" ]]; then
+    mkdir -p "$OUTPUT_DIR"
+fi
+
+# Change to project root
+cd "$PROJECT_ROOT"
+
+# Set environment variables to ensure current Python is used
+export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+export PYTHON_EXECUTABLE=$(which python)
+export PIP_EXECUTABLE=$(which pip)
+
+echo "Using Python: $PYTHON_EXECUTABLE"
+echo "Using Pip: $PIP_EXECUTABLE"
+echo "Python version: $($PYTHON_EXECUTABLE --version)"
+
+if [[ "$MODE" == "wheel" ]]; then
+    echo "Output directory: $OUTPUT_DIR"
+    if [[ "$NO_DEPS" == true ]]; then
+        echo "Dependency resolution: disabled (using current environment)"
+    fi
+    if [[ "$NO_INDEX" == true ]]; then
+        echo "PyPI index: disabled (using current environment only)"
+    fi
+fi
+
+if [[ "$EDITABLE_MODE" == true ]]; then
+    echo "Mode: $MODE (editable)"
+else
+    echo "Mode: $MODE (regular)"
+fi
+
+if [[ "$OPTIONAL_DEPS" == true ]]; then
+    echo "Optional dependencies: enabled"
+else
+    echo "Optional dependencies: disabled"
+fi
+
+echo ""
+echo "Installing helper package: build_config"
+
+# Always install the build_config helper package first (needed by other packages)
+HELPER_DIR="build_config"
+if [ -f "$HELPER_DIR/setup.py" ]; then
+    echo ""
+    echo "Installing helper package: $HELPER_DIR (required for other packages)"
+    cd "$HELPER_DIR"
+    
+    if [[ "$EDITABLE_MODE" == true ]]; then
+        echo "  Installing helper in editable mode..."
+        $PIP_EXECUTABLE install -e . --no-build-isolation || { echo "  ✗ Failed to install helper package"; exit 1; }
+    else
+        echo "  Installing helper in regular mode..."
+        $PIP_EXECUTABLE install . --no-build-isolation || { echo "  ✗ Failed to install helper package"; exit 1; }
+    fi
+    
+    cd - > /dev/null
+    echo "  ✓ Successfully installed helper package"
+else
+    echo "  ✗ Helper package setup.py not found in $HELPER_DIR, aborting."
+    exit 1
+fi
+
+# Build pip command with appropriate flags
+build_pip_command() {
+    local base_cmd="$PIP_EXECUTABLE"
+    local wheel_flags=""
+    
+    if [[ "$MODE" == "wheel" ]]; then
+        wheel_flags="--wheel-dir \"$OUTPUT_DIR\""
+        if [[ "$NO_DEPS" == true ]]; then
+            wheel_flags="$wheel_flags --no-deps"
+        fi
+        if [[ "$NO_INDEX" == true ]]; then
+            wheel_flags="$wheel_flags --no-index"
+        fi
+    fi
+    
+    echo "$base_cmd $1 $wheel_flags --no-build-isolation"
+}
+
+# For wheel mode, also build the helper package wheel
+if [[ "$MODE" == "wheel" ]]; then
+    echo ""
+    echo "Building helper package wheel: build_config"
+    cd "$HELPER_DIR"
+    
+    echo "  Building wheel..."
+    eval $(build_pip_command "wheel .") || { echo "  ✗ Failed to build helper package wheel"; exit 1; }
+    
+    cd - > /dev/null
+    echo "  ✓ Successfully built helper package wheel"
+fi
+
+echo ""
+if [[ "$MODE" == "install" ]]; then
+    echo "Installing namespace packages..."
+else
+    echo "Building namespace package wheels..."
+fi
+
+# Get the list of namespace packages from the config
+NAMESPACE_PACKAGES=$(python3 -c "
+from namespace_packages_config import get_namespace_packages
+packages = get_namespace_packages()
+for pkg in packages:
+    print(pkg)
+")
+
+# Count packages for progress tracking
+TOTAL_PACKAGES=$(echo "$NAMESPACE_PACKAGES" | wc -l)
+CURRENT_PACKAGE=0
+
+# Process each namespace package
+for pkg in $NAMESPACE_PACKAGES; do
+    CURRENT_PACKAGE=$((CURRENT_PACKAGE + 1))
+    echo ""
+    if [[ "$MODE" == "install" ]]; then
+        echo "[$CURRENT_PACKAGE/$TOTAL_PACKAGES] Installing namespace package: $pkg"
+    else
+        echo "[$CURRENT_PACKAGE/$TOTAL_PACKAGES] Building wheel for namespace package: $pkg"
+    fi
+    
+    # Extract package name (last part after the dot)
+    PACKAGE_NAME=$(echo "$pkg" | sed 's/.*\.//')
+    PACKAGE_DIR="packages/$PACKAGE_NAME"
+    
+    # Check if package directory exists
+    if [ ! -d "$PACKAGE_DIR" ]; then
+        echo "  Warning: Package directory '$PACKAGE_DIR' not found, skipping..."
+        continue
+    fi
+    
+    # Check if setup.py exists
+    if [ ! -f "$PACKAGE_DIR/setup.py" ]; then
+        echo "  Warning: setup.py not found in '$PACKAGE_DIR', skipping..."
+        continue
+    fi
+    
+    # Change to package directory and process
+    cd "$PACKAGE_DIR"
+    
+    if [[ "$MODE" == "install" ]]; then
+        if [[ "$EDITABLE_MODE" == true ]]; then
+            if [[ "$OPTIONAL_DEPS" == true ]]; then
+                echo "  Installing in editable mode with optional dependencies..."
+                $PIP_EXECUTABLE install -e .[optional] --no-build-isolation
+            else
+                echo "  Installing in editable mode..."
+                $PIP_EXECUTABLE install -e . --no-build-isolation
+            fi
+        else
+            if [[ "$OPTIONAL_DEPS" == true ]]; then
+                echo "  Installing in regular mode with optional dependencies..."
+                $PIP_EXECUTABLE install .[optional] --no-build-isolation
+            else
+                echo "  Installing in regular mode..."
+                $PIP_EXECUTABLE install . --no-build-isolation
+            fi
+        fi
+    elif [[ "$MODE" == "wheel" ]]; then
+        if [[ "$OPTIONAL_DEPS" == true ]]; then
+            echo "  Building wheel with optional dependencies..."
+            eval $(build_pip_command "wheel .[optional]")
+        else
+            echo "  Building wheel..."
+            eval $(build_pip_command "wheel .")
+        fi
+    fi
+    
+    # Return to project root
+    cd - > /dev/null
+    
+    if [ $? -eq 0 ]; then
+        if [[ "$MODE" == "install" ]]; then
+            echo "  ✓ Successfully installed $pkg"
+        else
+            echo "  ✓ Successfully built wheel for $pkg"
+        fi
+    else
+        if [[ "$MODE" == "install" ]]; then
+            echo "  ✗ Failed to install $pkg"
+        else
+            echo "  ✗ Failed to build wheel for $pkg"
+        fi
+        exit 1
+    fi
+done
+
+echo ""
+if [[ "$MODE" == "install" ]]; then
+    echo "Installation complete!"
+    echo "Testing imports..."
+    
+    # Test importing each namespace package
+    for pkg in $NAMESPACE_PACKAGES; do
+        echo "Testing import: $pkg"
+        $PYTHON_EXECUTABLE -c "import $pkg; print('  ✓ $pkg imported successfully!')" 2>/dev/null || {
+            echo "  ✗ Failed to import $pkg"
+            exit 1
+        }
+    done
+    
+    echo ""
+    echo "All namespace packages installed successfully and can be imported!"
+else
+    echo "Wheel building complete!"
+    echo "Wheels saved to: $OUTPUT_DIR"
+    
+    # List the generated wheels
+    echo ""
+    echo "Generated wheels:"
+    ls -la "$OUTPUT_DIR"/*.whl 2>/dev/null || echo "  No wheel files found in output directory"
+    
+    echo ""
+    echo "All namespace package wheels built successfully!"
+fi 

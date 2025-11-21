@@ -1,0 +1,20 @@
+This directory is a MIRROR of documentation content from the namespace packages.
+
+- Purpose: Provide Sphinx with a unified view of each package's docs/ and any
+  additional directories referenced by that documentation (e.g., examples/).
+- Mode: The mirror is created by docs/mirror_referenced_dirs.py using symlinks
+  by default (use --mode copy to copy files instead).
+- Source of truth: Do NOT edit files here. Make changes in the respective
+  package source directories under packages/<package_name>/...
+- Build behavior: This directory is re-created on each documentation build.
+- VCS policy: Everything in this directory is ignored by Git except this
+  IMPORTANT.txt and .gitignore file.
+
+Structure example:
+- contained_package_docs_mirror/
+  - <package_name>/
+    - docs/                  # symlink to packages/<package_name>/docs/
+    - <other_dirs>/          # symlinks to other referenced dirs (if any)
+
+If the mirror appears stale or broken, rebuild the docs:
+  cd docs && make html

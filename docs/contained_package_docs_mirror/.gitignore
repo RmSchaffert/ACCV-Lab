@@ -1,0 +1,7 @@
+# Mirror directory of package docs (symlinks by default)
+# Ignore all mirrored entries; keep this file tracked
+*
+!.gitignore
+!IMPORTANT.txt
+
+

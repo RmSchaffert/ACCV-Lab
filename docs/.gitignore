@@ -1,0 +1,9 @@
+_build/
+
+# Ignore contents of the folder but not the folder itself
+# Note that this is an important distincltion and if the 
+# folder itself is ignored (i.e. no `*` in the line below),
+# we cannot make exceptions for any files in the folder.
+autocopied_contained_packages/*
+# Do not ignore the IMPORTANT.txt file
+!autocopied_contained_packages/IMPORTANT.txt

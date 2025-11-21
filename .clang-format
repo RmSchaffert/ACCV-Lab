@@ -1,0 +1,19 @@
+---
+Language: Cpp
+BasedOnStyle: Google
+# Override Google style defaults
+IndentWidth: 4
+DerivePointerAlignment: false
+PointerAlignment: Left
+ReferenceAlignment: Left
+ColumnLimit: 110
+
+# Do not sort includes, as they may be grouped and/or sorted (e.g. by scope 
+# from standard libraries to local files)
+SortIncludes: false
+
+# This is important to not mess up lines in the comments which may be there for a reason
+# (e.g. retaining the original formatting of license headers etc.)
+ReflowComments: false
+
+#...

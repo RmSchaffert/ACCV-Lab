@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64", "wheel", "torch>=1.7.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "accvlab-build-config"
+version = "0.1.0"
+description = "Build configuration utilities for ACCV-Lab packages"
+requires-python = ">=3.7"
+authors = [
+    {name = "ACCV-Lab Team"}
+]
+dependencies = [
+    "torch>=1.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "black>=22.0",
+    "flake8>=4.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["accvlab_build_config*"]
+
+[tool.setuptools.package-dir]
+"" = "." 

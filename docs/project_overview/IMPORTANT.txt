@@ -1,0 +1,3 @@
+The other files contained ine this folder are modified copies of other files.
+Please do not modify them manually, as they will be overwritten when building the documentation.
+Instead, edit the original files.

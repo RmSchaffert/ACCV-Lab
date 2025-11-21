@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64", "wheel", "torch>=2.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "accvlab.optim_test_tools"
+version = "0.1.0"
+description = "Optimization Testing Tools Package (part of the ACCV-Lab package)."
+requires-python = ">=3.8"
+dependencies = [
+    "torch>=2.0.0",
+    "numpy>=1.22.2",
+    "accvlab-build-config>=0.1.0",
+    "psutil",
+]
+
+[project.optional-dependencies]
+optional = [
+    "opencv-python-headless",
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["accvlab.optim_test_tools*"] 
