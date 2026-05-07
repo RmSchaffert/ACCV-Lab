@@ -730,14 +730,15 @@ The `accvlab_build_config` package provides the following shared build & configu
 - `load_config()` - Loads build configuration from environment variables (shared across all build types). Please see the 
   [Available Build Variables](INSTALLATION_GUIDE.md#available-build-variables) section of the 
   [Installation Guide](INSTALLATION_GUIDE.md) for the list of the supported variables.
-- `detect_cuda_info()` - Detects CUDA availability and version
+- `detect_cuda_info()` - Detects CUDA availability and GPU architectures
 - `get_compile_flags()` - Generates compiler flags for PyTorch extensions; based on the variable values obtained from 
   `load_config()`. The generated flags can then be passed to the PyTorch extensions (see example below).
 - `build_cmake_args()` - Produces the full CMake `-D` argument list for CMake-based builds. It contains two parts:
   - **Environment-derived build settings**: Converts ACCV-Lab build variables into CMake cache entries:
     - `DEBUG_BUILD` → `CMAKE_BUILD_TYPE`
     - `CPP_STANDARD` → `CMAKE_CXX_STANDARD`, `CMAKE_CUDA_STANDARD`
-    - `CUSTOM_CUDA_ARCHS` → `CMAKE_CUDA_ARCHITECTURES` (auto-detect if unset)
+    - `CUSTOM_CUDA_ARCHS` → `CMAKE_CUDA_ARCHITECTURES` (auto-detect and cap to `nvcc` support if unset;
+      capping also adds one PTX target for the newest supported forward-compatible base architecture)
     - `VERBOSE_BUILD` → `CMAKE_VERBOSE_MAKEFILE`
     - `OPTIMIZE_LEVEL`, `USE_FAST_MATH`, `ENABLE_PROFILING` → appended to `CMAKE_CXX_FLAGS`, `CMAKE_CUDA_FLAGS`
     - Always sets `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`
@@ -816,7 +817,9 @@ Depending on the package type, build variables are consumed as follows:
   )
   ```
   - This forwards `DEBUG_BUILD`, `OPTIMIZE_LEVEL`, `CPP_STANDARD`, `VERBOSE_BUILD`, `CUSTOM_CUDA_ARCHS`, 
-    `USE_FAST_MATH`, and `ENABLE_PROFILING` to host and device compilers.
+    `USE_FAST_MATH`, and `ENABLE_PROFILING` to host and device compilers. If `CUSTOM_CUDA_ARCHS` is unset,
+    auto-detected GPU architectures are capped to the maximum architecture supported by the installed `nvcc`;
+    capping also adds one PTX target for the newest supported forward-compatible base architecture.
 
 - External implementation (manual CMake):
   - In `ext_impl/build_and_copy.sh`, forward variables using the helper to produce `cmake -D` args:
@@ -825,6 +828,9 @@ Depending on the package type, build variables are consumed as follows:
   cmake .. "${CMAKE_ARGS[@]}" ...
   cmake --build . --parallel
   ```
+  - If `CUSTOM_CUDA_ARCHS` is unset, the helper auto-detects GPU architectures and caps them to the maximum
+    architecture supported by the installed `nvcc` before setting `CMAKE_CUDA_ARCHITECTURES`; capping also
+    adds one PTX target for the newest supported forward-compatible base architecture.
   - In `CMakeLists.txt`, avoid hardcoding and guard defaults so passed values win:
   ```cmake
   if(NOT DEFINED CMAKE_CXX_STANDARD)
@@ -848,6 +854,9 @@ Depending on the package type, build variables are consumed as follows:
       cmake_args=_cmake_args,
   )
   ```
+  - If `CUSTOM_CUDA_ARCHS` is unset, `build_cmake_args()` auto-detects GPU architectures and caps them to
+    the maximum architecture supported by the installed `nvcc` before setting `CMAKE_CUDA_ARCHITECTURES`;
+    capping also adds one PTX target for the newest supported forward-compatible base architecture.
   - In `ext_impl/CMakeLists.txt`, guard defaults:
   ```cmake
   if(NOT DEFINED CMAKE_CXX_STANDARD)

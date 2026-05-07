@@ -235,7 +235,7 @@ DEBUG_BUILD=1 VERBOSE_BUILD=1 ./scripts/package_manager.sh install
 # Optimized build for production
 OPTIMIZE_LEVEL=3 USE_FAST_MATH=1 ./scripts/package_manager.sh install
 
-# Custom CUDA architectures (if you know your GPU architecture)
+# Custom CUDA architectures (if you need to override auto-detection)
 CUSTOM_CUDA_ARCHS="70,75,80" ./scripts/package_manager.sh install
 
 # Enable profiling support
@@ -261,9 +261,12 @@ ENABLE_PROFILING=1 ./scripts/package_manager.sh install
 > `CPP_STANDARD=c++17`. Using newer standards (e.g., C++20) may not be supported for CUDA builds for some 
 > of the packages.
 
-> **⚠️ Important**: If `CUSTOM_CUDA_ARCHS` is not set, auto-detection via PyTorch is attempted. If this fails, 
-> the build will use CMake's native detection (`CMAKE_CUDA_ARCHITECTURES=native`) to select the appropriate 
-> GPU architectures on the current system.
+> **⚠️ Important**: If `CUSTOM_CUDA_ARCHS` is not set, GPU architecture auto-detection via PyTorch is attempted.
+> Auto-detected architectures are capped to the maximum architecture supported by the installed `nvcc`, which
+> avoids selecting a GPU architecture that is newer than the CUDA toolkit used for the build. When an architecture
+> is capped, the build also includes one PTX target for the newest supported forward-compatible base architecture.
+> If auto-detection is not available, CMake-based builds fall back to the package's CMake default, typically
+> `CMAKE_CUDA_ARCHITECTURES=native`, while PyTorch extension builds use PyTorch's build defaults.
 
 ## Additional Information
 
