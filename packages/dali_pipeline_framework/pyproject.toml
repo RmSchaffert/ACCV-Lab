@@ -11,7 +11,7 @@ dependencies = [
     "torch>=2.0.0",
     "numpy>=1.22.2",
     "accvlab-build-config>=0.0.0",
-    "nvidia-dali-cuda120>=1.51.2",
+    "nvidia-dali-cuda130>=1.53.0",
     "numba>=0.59",
 ]
 
@@ -19,7 +19,7 @@ dependencies = [
 optional = [
     "pytest",
     "opencv-python-headless",
-    "cupy==13.6.0",
+    "cupy-cuda13x==13.6.0",
     "pyquaternion",
     "nuscenes-devkit",
     "shapely",
