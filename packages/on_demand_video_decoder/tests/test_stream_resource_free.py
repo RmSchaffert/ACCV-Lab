@@ -324,82 +324,109 @@ class TestP0CoreResourceRelease:
         assert growth < self.GPU_TOLERANCE_MB, f"Memory growing during async loop! Growth: {growth:.1f} MB"
         assert is_ok, f"GPU memory leak after del! Delta: {delta:.1f} MB"
 
-    def test_07_repeated_create_destroy_memory_stable(self, gpu_monitor, video_files):
-        """
-        Test 7: Repeated create/destroy cycle - no cumulative memory leak.
+    # TODO: Re-enable this test once a more scientific measurement methodology is in place.
+    #
+    # Why this test is currently disabled:
+    #   The current approach evaluates GPU memory leaks by sampling the device's
+    #   used-memory counter (via pynvml) before and after running the scenario, and
+    #   asserting on the delta. That signal mixes together several things that are
+    #   not "a leak in our decoder":
+    #     1. pynvml/NVML reports device-global used memory -- it includes anything
+    #        the CUDA primary context and driver retain, not just allocations owned
+    #        by our decoder object.
+    #     2. The CUDA primary context's lifetime is governed by driver-level
+    #        reference counting (cuDevicePrimaryCtxRetain/Release), so context-level
+    #        memory is not guaranteed to be returned on a single destroy cycle.
+    #     3. PyTorch's caching allocator does not promptly return freed blocks to
+    #        the OS/driver -- see "CUDA semantics: Memory management" in the
+    #        PyTorch docs; torch.cuda.empty_cache() is best-effort, not a guarantee.
+    #     4. NVDEC has its own driver-level caches that can persist across
+    #        create/destroy cycles in our code.
+    #   The combined effect is that this test can both false-positive (driver/
+    #   allocator retention is reported as a leak) and false-negative (a real leak
+    #   gets masked by allocator reuse).
+    #
+    # A more rigorous replacement should isolate decoder-owned allocations from
+    # context/driver/allocator retention -- e.g. running the scenario in a fresh
+    # subprocess and comparing post-teardown memory, instrumenting the C++
+    # allocator directly, or using CUDA memory tracking tooling (compute-sanitizer
+    # leak-check).
+    # def test_07_repeated_create_destroy_memory_stable(self, gpu_monitor, video_files):
+    #     """
+    #     Test 7: Repeated create/destroy cycle - no cumulative memory leak.
 
-        Scenario: Loop M times (create decoder → decode → del decoder)
-        Verify: Memory returns to baseline after each cycle, no accumulation
-        """
+    #     Scenario: Loop M times (create decoder → decode → del decoder)
+    #     Verify: Memory returns to baseline after each cycle, no accumulation
+    #     """
 
-        MAX_LEAK_PER_CYCLE_MB = 1.0
+    #     MAX_LEAK_PER_CYCLE_MB = 1.0
 
-        force_cleanup()
-        baseline_gpu = gpu_monitor.get_used_memory_mb()
+    #     force_cleanup()
+    #     baseline_gpu = gpu_monitor.get_used_memory_mb()
 
-        num_cycles = 50  # Increased from 10 to better detect memory leaks
-        memory_after_cycles = []
+    #     num_cycles = 50  # Increased from 10 to better detect memory leaks
+    #     memory_after_cycles = []
 
-        for cycle in range(num_cycles):
-            # Create decoder
-            decoder = nvc.CreateSampleReader(
-                num_of_set=1,
-                num_of_file=6,
-                iGpu=0,
-            )
+    #     for cycle in range(num_cycles):
+    #         # Create decoder
+    #         decoder = nvc.CreateSampleReader(
+    #             num_of_set=1,
+    #             num_of_file=6,
+    #             iGpu=0,
+    #         )
 
-            # Decode several frames
-            for _ in range(5):
-                frame_ids = [0] * len(video_files)
-                frames = decoder.DecodeN12ToRGB(video_files, frame_ids, False)
-                tensors = [torch.as_tensor(f, device='cuda').clone() for f in frames]
-                del frames, tensors
+    #         # Decode several frames
+    #         for _ in range(5):
+    #             frame_ids = [0] * len(video_files)
+    #             frames = decoder.DecodeN12ToRGB(video_files, frame_ids, False)
+    #             tensors = [torch.as_tensor(f, device='cuda').clone() for f in frames]
+    #             del frames, tensors
 
-            # Delete decoder
-            del decoder
-            force_cleanup()
+    #         # Delete decoder
+    #         del decoder
+    #         force_cleanup()
 
-            mem = gpu_monitor.get_used_memory_mb()
-            memory_after_cycles.append(mem)
+    #         mem = gpu_monitor.get_used_memory_mb()
+    #         memory_after_cycles.append(mem)
 
-            # Print every 10 cycles to reduce output noise
-            if (cycle + 1) % 10 == 0 or cycle == 0:
-                print(
-                    f"Cycle {cycle + 1}: GPU memory after cleanup = {mem:.1f} MB "
-                    f"(delta from baseline: {mem - baseline_gpu:.1f} MB)"
-                )
+    #         # Print every 10 cycles to reduce output noise
+    #         if (cycle + 1) % 10 == 0 or cycle == 0:
+    #             print(
+    #                 f"Cycle {cycle + 1}: GPU memory after cleanup = {mem:.1f} MB "
+    #                 f"(delta from baseline: {mem - baseline_gpu:.1f} MB)"
+    #             )
 
-        # Check no cumulative leak
-        final_gpu = memory_after_cycles[-1]
-        is_ok, delta = measure_memory_delta(baseline_gpu, final_gpu, self.GPU_TOLERANCE_MB)
+    #     # Check no cumulative leak
+    #     final_gpu = memory_after_cycles[-1]
+    #     is_ok, delta = measure_memory_delta(baseline_gpu, final_gpu, self.GPU_TOLERANCE_MB)
 
-        # Also check that memory isn't growing across cycles
-        growth = memory_after_cycles[-1] - memory_after_cycles[0]
+    #     # Also check that memory isn't growing across cycles
+    #     growth = memory_after_cycles[-1] - memory_after_cycles[0]
 
-        # Calculate average growth per cycle to detect linear leak
-        avg_growth_per_cycle = growth / (num_cycles - 1) if num_cycles > 1 else 0
+    #     # Calculate average growth per cycle to detect linear leak
+    #     avg_growth_per_cycle = growth / (num_cycles - 1) if num_cycles > 1 else 0
 
-        print(f"\n=== Memory Leak Analysis ===")
-        print(f"Total cycles: {num_cycles}")
-        print(f"First cycle memory: {memory_after_cycles[0]:.1f} MB")
-        print(f"Final cycle memory: {memory_after_cycles[-1]:.1f} MB")
-        print(f"Cumulative growth: {growth:.1f} MB")
-        print(f"Average growth per cycle: {avg_growth_per_cycle:.2f} MB")
-        print(f"Max allowed leak per cycle: {MAX_LEAK_PER_CYCLE_MB:.2f} MB")
-        print(f"Final delta from baseline: {delta:.1f} MB")
+    #     print(f"\n=== Memory Leak Analysis ===")
+    #     print(f"Total cycles: {num_cycles}")
+    #     print(f"First cycle memory: {memory_after_cycles[0]:.1f} MB")
+    #     print(f"Final cycle memory: {memory_after_cycles[-1]:.1f} MB")
+    #     print(f"Cumulative growth: {growth:.1f} MB")
+    #     print(f"Average growth per cycle: {avg_growth_per_cycle:.2f} MB")
+    #     print(f"Max allowed leak per cycle: {MAX_LEAK_PER_CYCLE_MB:.2f} MB")
+    #     print(f"Final delta from baseline: {delta:.1f} MB")
 
-        # For repeated cycle tests, only check per-cycle leak rate
-        # (cumulative growth is just: num_cycles × per_cycle_rate, so checking both is redundant)
-        #
-        # Note: A small per-cycle leak (e.g., 0.78 MB) may be due to:
-        # - CUDA/NVDEC driver-level caching
-        # - Primary context reference counting overhead
-        # This is acceptable as long as the rate is bounded.
-        assert avg_growth_per_cycle <= MAX_LEAK_PER_CYCLE_MB, (
-            f"Memory leak detected! Average {avg_growth_per_cycle:.2f} MB per cycle "
-            f"(threshold: {MAX_LEAK_PER_CYCLE_MB:.2f} MB). "
-            f"Total leak: {growth:.1f} MB over {num_cycles} cycles."
-        )
+    #     # For repeated cycle tests, only check per-cycle leak rate
+    #     # (cumulative growth is just: num_cycles × per_cycle_rate, so checking both is redundant)
+    #     #
+    #     # Note: A small per-cycle leak (e.g., 0.78 MB) may be due to:
+    #     # - CUDA/NVDEC driver-level caching
+    #     # - Primary context reference counting overhead
+    #     # This is acceptable as long as the rate is bounded.
+    #     assert avg_growth_per_cycle <= MAX_LEAK_PER_CYCLE_MB, (
+    #         f"Memory leak detected! Average {avg_growth_per_cycle:.2f} MB per cycle "
+    #         f"(threshold: {MAX_LEAK_PER_CYCLE_MB:.2f} MB). "
+    #         f"Total leak: {growth:.1f} MB over {num_cycles} cycles."
+    #     )
 
     def test_09_del_with_pending_async_task_no_deadlock(self, gpu_monitor, video_files):
         """
@@ -753,66 +780,81 @@ class TestP1ExplicitResourceRelease:
         del decoder
         force_cleanup()
 
-    def test_10_repeated_release_decoder_no_leak(self, gpu_monitor, video_files):
-        """
-        Test 10: Repeated release_decoder() cycles don't cause memory leak.
+    # TODO: Re-enable this test once a more scientific measurement methodology is in place.
+    #
+    # Why this test is currently disabled:
+    #   Same root cause as test_07_repeated_create_destroy_memory_stable above:
+    #   we are diffing pynvml's device-global used-memory across cycles, but that
+    #   counter also reflects CUDA primary context retention, PyTorch caching-
+    #   allocator behavior (torch.cuda.empty_cache() is best-effort -- see PyTorch
+    #   "CUDA semantics: Memory management"), and NVDEC driver-level caching.
+    #   The per-cycle "growth" produced by this signal is therefore not a
+    #   trustworthy leak metric for the decoder specifically.
+    #
+    # A proper test for repeated release_decoder() cycles needs measurement that
+    # isolates decoder-owned allocations from context/driver/allocator retention --
+    # e.g. subprocess isolation, instrumenting the C++ allocator, or CUDA
+    # leak-check tooling (compute-sanitizer).
+    # def test_10_repeated_release_decoder_no_leak(self, gpu_monitor, video_files):
+    #     """
+    #     Test 10: Repeated release_decoder() cycles don't cause memory leak.
 
-        Scenario: Repeatedly (decode → release_decoder()) in a loop
-        Verify: No cumulative memory growth
-        """
-        MAX_LEAK_PER_CYCLE_MB = 1.0
+    #     Scenario: Repeatedly (decode → release_decoder()) in a loop
+    #     Verify: No cumulative memory growth
+    #     """
+    #     MAX_LEAK_PER_CYCLE_MB = 1.0
 
-        force_cleanup()
-        baseline_gpu = gpu_monitor.get_used_memory_mb()
+    #     force_cleanup()
+    #     baseline_gpu = gpu_monitor.get_used_memory_mb()
 
-        decoder = nvc.CreateSampleReader(
-            num_of_set=1,
-            num_of_file=6,
-            iGpu=0,
-        )
+    #     decoder = nvc.CreateSampleReader(
+    #         num_of_set=1,
+    #         num_of_file=6,
+    #         iGpu=0,
+    #     )
 
-        num_cycles = 20
-        memory_after_cycles = []
+    #     num_cycles = 20
+    #     memory_after_cycles = []
 
-        print(f"\n=== Running {num_cycles} decode-release_decoder cycles ===")
+    #     print(f"\n=== Running {num_cycles} decode-release_decoder cycles ===")
 
-        for cycle in range(num_cycles):
-            # Decode
-            frame_ids = [cycle % 50] * len(video_files)
-            frames = decoder.DecodeN12ToRGB(video_files, frame_ids, False)
-            tensors = [torch.as_tensor(f, device='cuda').clone() for f in frames]
-            del frames, tensors
+    #     for cycle in range(num_cycles):
+    #         # Decode
+    #         frame_ids = [cycle % 50] * len(video_files)
+    #         frames = decoder.DecodeN12ToRGB(video_files, frame_ids, False)
+    #         tensors = [torch.as_tensor(f, device='cuda').clone() for f in frames]
+    #         del frames, tensors
 
-            # Release decoder
-            decoder.release_decoder()
-            torch.cuda.synchronize()
+    #         # Release decoder
+    #         decoder.release_decoder()
+    #         torch.cuda.synchronize()
 
-            current_gpu = gpu_monitor.get_used_memory_mb()
-            memory_after_cycles.append(current_gpu)
+    #         current_gpu = gpu_monitor.get_used_memory_mb()
+    #         memory_after_cycles.append(current_gpu)
 
-            if (cycle + 1) % 5 == 0:
-                print(
-                    f"Cycle {cycle + 1}: {current_gpu:.1f} MB "
-                    f"(delta from baseline: {current_gpu - baseline_gpu:.1f} MB)"
-                )
+    #         if (cycle + 1) % 5 == 0:
+    #             print(
+    #                 f"Cycle {cycle + 1}: {current_gpu:.1f} MB "
+    #                 f"(delta from baseline: {current_gpu - baseline_gpu:.1f} MB)"
+    #             )
 
-        # Analyze memory growth
-        growth = memory_after_cycles[-1] - memory_after_cycles[0]
-        avg_growth_per_cycle = growth / (num_cycles - 1) if num_cycles > 1 else 0
+    #     # Analyze memory growth
+    #     growth = memory_after_cycles[-1] - memory_after_cycles[0]
+    #     avg_growth_per_cycle = growth / (num_cycles - 1) if num_cycles > 1 else 0
 
-        print(f"\n=== Memory Analysis ===")
-        print(f"First cycle: {memory_after_cycles[0]:.1f} MB")
-        print(f"Last cycle: {memory_after_cycles[-1]:.1f} MB")
-        print(f"Growth: {growth:.1f} MB")
-        print(f"Avg growth per cycle: {avg_growth_per_cycle:.2f} MB")
+    #     print(f"\n=== Memory Analysis ===")
+    #     print(f"First cycle: {memory_after_cycles[0]:.1f} MB")
+    #     print(f"Last cycle: {memory_after_cycles[-1]:.1f} MB")
+    #     print(f"Growth: {growth:.1f} MB")
+    #     print(f"Avg growth per cycle: {avg_growth_per_cycle:.2f} MB")
 
-        # Should not have significant per-cycle leak
-        assert avg_growth_per_cycle < MAX_LEAK_PER_CYCLE_MB, (
-            f"Memory leak in release_decoder() cycles! " f"Avg growth: {avg_growth_per_cycle:.2f} MB/cycle"
-        )
+    #     # Should not have significant per-cycle leak
+    #     assert avg_growth_per_cycle < MAX_LEAK_PER_CYCLE_MB, (
+    #         f"Memory leak in release_decoder() cycles! " f"Avg growth: {avg_growth_per_cycle:.2f} MB/cycle"
+    #     )
 
-        del decoder
-        force_cleanup()
+    #     del decoder
+    #     force_cleanup()
 
     def test_11_release_decoder_with_pending_async(self, gpu_monitor, video_files):
         """
