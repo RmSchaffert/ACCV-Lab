@@ -208,6 +208,36 @@ class TestPutDoubleCheck:
         stats = store.get_stats()
         assert stats['puts'] == 1, "Second put should be a no-op"
 
+    def test_overlapping_ranges_stored_independently(self, store):
+        """Two puts with distinct ``first_frame_id`` produce distinct entries
+        even when their ``[first_frame_id, first_frame_id + gop_len)`` ranges
+        overlap. De-duplication keys on the exact
+        ``(video, first_frame_id, gop_len)`` tuple, not on range coverage.
+        """
+        gop_a = _make_gop_data(1024, seed=1)
+        gop_b = _make_gop_data(1024, seed=2)
+        ref_a = store.put("/v.mp4", first_frame_id=400, gop_len=73, data=gop_a)
+        ref_b = store.put("/v.mp4", first_frame_id=470, gop_len=75, data=gop_b)
+        assert ref_a.shm_name != ref_b.shm_name
+        assert ref_b.first_frame_id == 470 and ref_b.gop_len == 75
+        # shm names embed first_frame_id; the two entries live in distinct blocks.
+        assert ref_a.shm_name.endswith("_400")
+        assert ref_b.shm_name.endswith("_470")
+        np.testing.assert_array_equal(store.read(ref_a), gop_a)
+        np.testing.assert_array_equal(store.read(ref_b), gop_b)
+
+    def test_exact_match_dedup_on_first_frame_id_and_gop_len(self, store):
+        """Two puts with the same ``first_frame_id`` but different ``gop_len``
+        are stored as separate entries, and the latest payload is what
+        subsequent reads return.
+        """
+        gop_old = _make_gop_data(1024, seed=10)
+        gop_new = _make_gop_data(2048, seed=11)
+        store.put("/v.mp4", first_frame_id=0, gop_len=20, data=gop_old)
+        ref_new = store.put("/v.mp4", first_frame_id=0, gop_len=30, data=gop_new)
+        assert ref_new.gop_len == 30
+        np.testing.assert_array_equal(store.read(ref_new), gop_new)
+
 
 # ---------------------------------------------------------------------------
 # LRU eviction

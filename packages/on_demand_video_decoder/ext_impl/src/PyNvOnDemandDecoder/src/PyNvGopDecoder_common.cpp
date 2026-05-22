@@ -294,7 +294,13 @@ void PyNvGopDecoder::DemuxGopProc(PyNvGopDemuxer* demuxer,
                     if (find_key_frame) next_key_frame_id = frame_id_out;
                 }
 
-                if (frame_id_out < next_key_frame_id)
+                // Count only packets whose display index lies inside this
+                // GOP's display range [key_frame_id, next_key_frame_id).
+                // HEVC leading pictures (RASL/RADL) follow their IRAP in
+                // decode order but precede it in display, so their
+                // frame_id_out is below key_frame_id; they belong to the
+                // previous GOP's display range, not this one.
+                if (frame_id_out >= key_frame_id && frame_id_out < next_key_frame_id)
                     gop_len++;
                 else if (frame_id_out > next_key_frame_id)
                     break;

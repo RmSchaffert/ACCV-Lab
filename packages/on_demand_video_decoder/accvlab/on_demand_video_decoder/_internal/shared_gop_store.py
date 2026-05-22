@@ -263,15 +263,28 @@ class SharedGopStore:
         """
         self._lock()
         try:
-            # Double-check: another worker may have inserted while we waited
-            existing = self.lookup(video_path, first_frame_id)
-            if existing is not None:
-                return existing
+            # Skip allocation if an identical GOP — same video, same
+            # first_frame_id, same gop_len — is already in the table.
+            vp_hash = _hash_video_path(video_path)
+            for i in range(self.capacity):
+                e = self._entries[i]
+                if (
+                    e['state'] == _STATE_USED
+                    and e['video_path_hash'] == vp_hash
+                    and e['first_frame_id'] == first_frame_id
+                    and e['gop_len'] == gop_len
+                ):
+                    e['access_tick'] = self._next_tick()
+                    return GopRef(
+                        shm_name=e['shm_name'].decode(),
+                        data_size=int(e['data_size']),
+                        first_frame_id=int(e['first_frame_id']),
+                        gop_len=int(e['gop_len']),
+                    )
 
             slot_idx = self._find_free_or_evict()
 
             # Content-addressed naming -- same GOP always gets the same name.
-            vp_hash = _hash_video_path(video_path)
             shm_name = f"{_SHM_PREFIX}_{self.store_id}_{vp_hash}_{first_frame_id}"
             data_size = int(data.nbytes)
 
