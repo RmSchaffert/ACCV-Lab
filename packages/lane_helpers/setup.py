@@ -12,6 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
 from skbuild import setup
 from setuptools import find_namespace_packages
 
@@ -32,13 +40,29 @@ _ACCVLAB_BUILD_CONFIG_IMPORT_ERROR = """
 """
 
 try:
-    from accvlab_build_config import build_cmake_args
+    from accvlab_build_config import build_cmake_args, detect_cuda_info
 except ModuleNotFoundError as exc:
     if exc.name != "accvlab_build_config":
         raise
     raise RuntimeError(_ACCVLAB_BUILD_CONFIG_IMPORT_ERROR) from exc
 
 _cmake_args = build_cmake_args()
+
+_debug_artifact_dir = os.environ.get("ACCVLAB_DEBUG_ARTIFACT_DIR")
+if _debug_artifact_dir:
+    _debug_payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "cwd": os.getcwd(),
+        "cmake_args": _cmake_args,
+        "cuda_info": detect_cuda_info(),
+    }
+    _debug_path = Path(_debug_artifact_dir) / "lane_helpers-setup.json"
+    _debug_path.parent.mkdir(parents=True, exist_ok=True)
+    _debug_path.write_text(json.dumps(_debug_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _debug_lines = ["[lane_helpers debug] build_cmake_args:", *[f"  {arg}" for arg in _cmake_args]]
+    for line in _debug_lines:
+        print(line, file=sys.stderr)
+        print(line)
 
 
 setup(
