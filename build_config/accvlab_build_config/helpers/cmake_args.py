@@ -3,7 +3,11 @@ import re
 from pathlib import Path
 from typing import List, Optional
 
-from .build_utils import detect_cuda_info, select_cuda_architectures_for_nvcc
+from .build_utils import (
+    detect_cuda_info,
+    resolve_torch_cuda_arch_list,
+    select_cuda_architectures_for_nvcc,
+)
 
 # Marker file at the ACCV-Lab monorepo root (see `.nav` in the repository).
 _NAV_MARKER = ".nav"
@@ -118,6 +122,7 @@ def _build_cmake_args_from_env() -> List[str]:
             args.append(f"-DCMAKE_CUDA_STANDARD={norm}")
 
     # CUSTOM_CUDA_ARCHS -> CMAKE_CUDA_ARCHITECTURES
+    cuda_info = detect_cuda_info()
     custom_archs = os.environ.get("CUSTOM_CUDA_ARCHS")
     if custom_archs:
         # Accept comma or semicolon separated
@@ -125,7 +130,6 @@ def _build_cmake_args_from_env() -> List[str]:
         args.append(f'-DCMAKE_CUDA_ARCHITECTURES={norm_archs}')
     else:
         # Attempt auto-detection via torch; if empty, let CMake defaults apply
-        cuda_info = detect_cuda_info()
         detected = cuda_info['gpu_architectures'] if cuda_info['cuda_available'] else []
         if detected:
             selection = select_cuda_architectures_for_nvcc(detected)
@@ -169,6 +173,13 @@ def _build_cmake_args_from_env() -> List[str]:
         args.append(f'-DCMAKE_CXX_FLAGS={" ".join(cxx_flags)}')
     if cuda_flags:
         args.append(f'-DCMAKE_CUDA_FLAGS={" ".join(cuda_flags)}')
+
+    # PyTorch CMake ignores CMAKE_CUDA_ARCHITECTURES; skbuild packages that call
+    # find_package(Torch) must configure TORCH_CUDA_ARCH_LIST explicitly.
+    torch_cuda_arch_list = resolve_torch_cuda_arch_list(cuda_info)
+    if torch_cuda_arch_list:
+        os.environ.setdefault("TORCH_CUDA_ARCH_LIST", torch_cuda_arch_list)
+        args.append(f"-DACCVLAB_TORCH_CUDA_ARCH_LIST={torch_cuda_arch_list}")
 
     return args
 

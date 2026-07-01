@@ -68,6 +68,42 @@ class CudaArchSelectionTest(unittest.TestCase):
         self.assertEqual(selection.architectures, ["103"])
         self.assertEqual(selection.ptx_architectures, [])
 
+    def test_format_torch_cuda_arch_list_converts_compact_numbers(self):
+        self.assertEqual(build_utils.format_torch_cuda_arch_list(["90"]), "9.0")
+        self.assertEqual(build_utils.format_torch_cuda_arch_list(["103"]), "10.3")
+        self.assertEqual(build_utils.format_torch_cuda_arch_list(["120a"]), "12.0a")
+        self.assertEqual(
+            build_utils.format_torch_cuda_arch_list(["90", "103"]),
+            "9.0;10.3",
+        )
+
+    def test_resolve_torch_cuda_arch_list_uses_env_override(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"TORCH_CUDA_ARCH_LIST": "8.0"},
+            clear=False,
+        ):
+            resolved = build_utils.resolve_torch_cuda_arch_list(
+                {"cuda_available": True, "gpu_architectures": ["90"]}
+            )
+        self.assertEqual(resolved, "8.0")
+
+    def test_resolve_torch_cuda_arch_list_uses_detected_real_arch(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with self._mock_supported_architectures(["80", "90", "100"]):
+                resolved = build_utils.resolve_torch_cuda_arch_list(
+                    {"cuda_available": True, "gpu_architectures": ["90"]}
+                )
+        self.assertEqual(resolved, "9.0")
+
+    def test_resolve_torch_cuda_arch_list_adds_ptx_for_unsupported_arch(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with self._mock_supported_architectures(["100", "120"]):
+                resolved = build_utils.resolve_torch_cuda_arch_list(
+                    {"cuda_available": True, "gpu_architectures": ["103"]}
+                )
+        self.assertEqual(resolved, "10.0+PTX")
+
     def test_explicit_custom_architectures_are_not_rewritten(self):
         with mock.patch.object(
             build_utils,

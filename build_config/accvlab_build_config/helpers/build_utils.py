@@ -296,6 +296,86 @@ def detect_cuda_info():
     return cuda_info
 
 
+def format_torch_cuda_arch_list(architectures: List[str]) -> str:
+    """Convert compact CUDA architecture numbers to ``TORCH_CUDA_ARCH_LIST`` format.
+
+    Examples:
+        ``["90"]`` -> ``"9.0"``
+        ``["103"]`` -> ``"10.3"``
+        ``["120a"]`` -> ``"12.0a"``
+    """
+    formatted: List[str] = []
+    for arch in architectures:
+        arch = arch.strip()
+        if not arch:
+            continue
+        if re.match(r"^\d+\.\d", arch):
+            formatted.append(arch)
+            continue
+
+        match = re.match(r"^(\d+)([a-z]?)$", arch)
+        if not match:
+            formatted.append(arch)
+            continue
+
+        digits, suffix = match.group(1), match.group(2)
+        if len(digits) == 1:
+            formatted.append(f"{digits}.0{suffix}")
+        else:
+            formatted.append(f"{digits[:-1]}.{digits[-1]}{suffix}")
+
+    seen = set()
+    unique: List[str] = []
+    for item in formatted:
+        if item not in seen:
+            seen.add(item)
+            unique.append(item)
+    return ";".join(unique)
+
+
+def resolve_torch_cuda_arch_list(cuda_info: Optional[dict] = None) -> Optional[str]:
+    """Resolve ``TORCH_CUDA_ARCH_LIST`` for PyTorch CMake extension builds.
+
+    PyTorch's CMake integration ignores ``CMAKE_CUDA_ARCHITECTURES`` and uses
+    ``TORCH_CUDA_ARCH_LIST`` instead. This mirrors ``get_compile_flags()`` arch
+    selection for skbuild packages that call ``find_package(Torch)``.
+    """
+    env_value = os.environ.get("TORCH_CUDA_ARCH_LIST")
+    if env_value:
+        return env_value
+
+    custom_archs = os.environ.get("CUSTOM_CUDA_ARCHS")
+    if custom_archs:
+        return format_torch_cuda_arch_list(_split_cuda_architectures(custom_archs))
+
+    if cuda_info is None:
+        cuda_info = detect_cuda_info()
+    if not cuda_info.get("cuda_available"):
+        return None
+
+    detected = cuda_info.get("gpu_architectures") or []
+    if not detected:
+        return None
+
+    selection = select_cuda_architectures_for_nvcc(detected)
+    arch_names: List[str] = []
+    for arch in selection.architectures:
+        arch_names.append(format_torch_cuda_arch_list([arch]))
+    for arch in selection.ptx_architectures:
+        arch_names.append(f"{format_torch_cuda_arch_list([arch])}+PTX")
+
+    if arch_names:
+        seen = set()
+        unique: List[str] = []
+        for item in arch_names:
+            if item not in seen:
+                seen.add(item)
+                unique.append(item)
+        return ";".join(unique)
+
+    return format_torch_cuda_arch_list(detected)
+
+
 def get_compile_flags(config, cuda_info, include_dirs=None):
     """Construct compilation flags.
 
