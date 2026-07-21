@@ -219,3 +219,5 @@ editably
 stderr
 stdout
 backend
+frenet
+normals

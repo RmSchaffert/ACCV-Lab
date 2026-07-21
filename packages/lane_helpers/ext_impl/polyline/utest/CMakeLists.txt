@@ -55,6 +55,10 @@ target_link_libraries(accvlab_lane_helpers_polyline_native_test_impl PRIVATE
     ${TORCH_PYTHON_LIBRARY}
 )
 
+target_link_libraries(accvlab_lane_helpers_polyline_native_test_impl PUBLIC
+    accvlab_lane_helpers_ext_helpers
+)
+
 function(accvlab_lane_helpers_add_polyline_test target_name source_file)
     add_executable(${target_name} EXCLUDE_FROM_ALL ${source_file})
 

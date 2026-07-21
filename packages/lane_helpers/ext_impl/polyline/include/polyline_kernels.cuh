@@ -18,9 +18,11 @@
 #define LANE_HELPERS_POLYLINE_KERNELS_CUH
 
 #include "polyline_common.cuh"
-#include "polyline_dtype_compat.cuh"
+#include "dtype_compat.cuh"
 
 namespace polyline {
+
+using lane_helpers::ext_impl::shfl_xor_sync_compat;
 
 template <typename dtype>
 __device__ __forceinline__ void prefix_sum_warp(int index, dtype value, int num_values_in_scan,

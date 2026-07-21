@@ -14,6 +14,7 @@
 
 import argparse
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 import gc
 import sys
 import time
@@ -54,6 +55,8 @@ DEFAULT_SKIP_SHAPELY = False
 DEFAULT_ASSERT_RESULTS = False
 DEFAULT_ASSERT_ATOL = 1e-3
 DEFAULT_ASSERT_RTOL = 0.0
+DEFAULT_ASSERT_FLOAT64_ATOL = 1e-8
+DEFAULT_ASSERT_FLOAT64_RTOL = 0.0
 # Plot annotations call out representative cells in generated heatmaps.
 DEFAULT_ANNOTATE_PLOTS = True
 # ================== End: Default configuration for the evaluation =================
@@ -61,10 +64,26 @@ DEFAULT_ANNOTATE_PLOTS = True
 
 # ================== Constants for the evaluation ==================
 DEVICE = "cuda"
-DTYPE_NP = np.float32
-DTYPE_TORCH = torch.float32
+DTYPE_NP = np.float64
+DTYPE_TORCH_FLOAT32 = torch.float32
+DTYPE_TORCH_FLOAT64 = torch.float64
 _POLYLINE_MODULE: ModuleType | None = None
 # ================ End: Constants for the evaluation ===============
+
+
+@dataclass(frozen=True)
+class _BatchEvaluationResults:
+    shapely_runtime_ms: np.ndarray | None
+    cpu_runtime_ms: np.ndarray
+    cuda_runtime_ms: np.ndarray
+    cpu_runtime_float64_ms: np.ndarray
+    cuda_runtime_float64_ms: np.ndarray
+    max_abs_diff_cpu: np.ndarray | None
+    max_abs_diff_cuda: np.ndarray | None
+    max_abs_diff_cuda_vs_cpu: np.ndarray | None
+    max_abs_diff_cpu_float64: np.ndarray | None
+    max_abs_diff_cuda_float64: np.ndarray | None
+    max_abs_diff_cuda_float64_vs_cpu_float64: np.ndarray | None
 
 
 # Helper function for lazily importing the compiled polyline module outside plotting-only mode.
@@ -87,14 +106,10 @@ def _parse_int_list(value: str) -> list[int]:
 def _compute_batched_shapely_reference(points: np.ndarray, distances: np.ndarray) -> np.ndarray:
     line_strings = linestrings(points)
     interpolated_points = line_interpolate_point(line_strings[:, None], distances)
-    batched_reference = (
-        get_coordinates(interpolated_points)
-        .reshape(
-            points.shape[0],
-            distances.shape[1],
-            points.shape[2],
-        )
-        .astype(DTYPE_NP)
+    batched_reference = get_coordinates(interpolated_points).reshape(
+        points.shape[0],
+        distances.shape[1],
+        points.shape[2],
     )
     return batched_reference
 
@@ -164,9 +179,10 @@ def _iter_evaluation_cases(
 # Helper function for placing the same NumPy inputs on CUDA and CPU.
 def _make_torch_tensors(
     *arrays: np.ndarray,
+    dtype: torch.dtype,
 ) -> tuple[torch.Tensor, ...]:
-    tensors_gpu = [torch.tensor(array, device=DEVICE, dtype=DTYPE_TORCH) for array in arrays]
-    tensors_cpu = [torch.tensor(array, device="cpu", dtype=DTYPE_TORCH) for array in arrays]
+    tensors_gpu = [torch.tensor(array, device=DEVICE, dtype=dtype) for array in arrays]
+    tensors_cpu = [torch.tensor(array, device="cpu", dtype=dtype) for array in arrays]
     return *tensors_gpu, *tensors_cpu
 
 
@@ -174,8 +190,9 @@ def _make_torch_tensors(
 def _make_torch_tensors_on_device(
     *arrays: np.ndarray,
     device: str,
+    dtype: torch.dtype,
 ) -> tuple[torch.Tensor, ...]:
-    tensors = tuple(torch.tensor(array, device=device, dtype=DTYPE_TORCH) for array in arrays)
+    tensors = tuple(torch.tensor(array, device=device, dtype=dtype) for array in arrays)
     return tensors
 
 
@@ -270,7 +287,21 @@ def _run_warmup(
         num_distances,
         seed=0,
     )
-    points_gpu, distances_gpu, points_cpu, distances_cpu = _make_torch_tensors(points_np, distances_np)
+    points_gpu, distances_gpu, points_cpu, distances_cpu = _make_torch_tensors(
+        points_np,
+        distances_np,
+        dtype=DTYPE_TORCH_FLOAT32,
+    )
+    (
+        points_gpu_float64,
+        distances_gpu_float64,
+        points_cpu_float64,
+        distances_cpu_float64,
+    ) = _make_torch_tensors(
+        points_np,
+        distances_np,
+        dtype=DTYPE_TORCH_FLOAT64,
+    )
     polyline_module = _get_polyline_module()
 
     for _ in range(num_warmup_runs):
@@ -278,6 +309,8 @@ def _run_warmup(
             _compute_batched_shapely_reference(points_np, distances_np)
         polyline_module.interpolate(points_cpu, distances_cpu)
         polyline_module.interpolate(points_gpu, distances_gpu)
+        polyline_module.interpolate(points_cpu_float64, distances_cpu_float64)
+        polyline_module.interpolate(points_gpu_float64, distances_gpu_float64)
 
     torch.cuda.synchronize()
 
@@ -290,9 +323,14 @@ def _run_validation_sweep(
     *,
     assert_atol: float,
     assert_rtol: float,
+    assert_float64_atol: float,
+    assert_float64_rtol: float,
     max_abs_diff_cpu: np.ndarray,
     max_abs_diff_cuda: np.ndarray,
     max_abs_diff_cuda_vs_cpu: np.ndarray,
+    max_abs_diff_cpu_float64: np.ndarray,
+    max_abs_diff_cuda_float64: np.ndarray,
+    max_abs_diff_cuda_float64_vs_cpu_float64: np.ndarray,
 ) -> None:
     print(f"Running validation sweep for batch={batch_size}")
     polyline_module = _get_polyline_module()
@@ -310,18 +348,45 @@ def _run_validation_sweep(
             seed=seed,
         )
         shapely_result = _compute_batched_shapely_reference(points_np, distances_np)
-        points_gpu, distances_gpu, points_cpu, distances_cpu = _make_torch_tensors(points_np, distances_np)
+        points_gpu, distances_gpu, points_cpu, distances_cpu = _make_torch_tensors(
+            points_np,
+            distances_np,
+            dtype=DTYPE_TORCH_FLOAT32,
+        )
+        (
+            points_gpu_float64,
+            distances_gpu_float64,
+            points_cpu_float64,
+            distances_cpu_float64,
+        ) = _make_torch_tensors(
+            points_np,
+            distances_np,
+            dtype=DTYPE_TORCH_FLOAT64,
+        )
         cpu_result = polyline_module.interpolate(points_cpu, distances_cpu).numpy()
         cuda_result = polyline_module.interpolate(points_gpu, distances_gpu).cpu().numpy()
+        cpu_result_float64 = polyline_module.interpolate(points_cpu_float64, distances_cpu_float64).numpy()
+        cuda_result_float64 = (
+            polyline_module.interpolate(points_gpu_float64, distances_gpu_float64).cpu().numpy()
+        )
 
         max_abs_diff_cpu[points_idx, distances_idx] = np.abs(shapely_result - cpu_result).max()
         max_abs_diff_cuda[points_idx, distances_idx] = np.abs(shapely_result - cuda_result).max()
         max_abs_diff_cuda_vs_cpu[points_idx, distances_idx] = np.abs(cpu_result - cuda_result).max()
+        max_abs_diff_cpu_float64[points_idx, distances_idx] = np.abs(
+            shapely_result - cpu_result_float64
+        ).max()
+        max_abs_diff_cuda_float64[points_idx, distances_idx] = np.abs(
+            shapely_result - cuda_result_float64
+        ).max()
+        max_abs_diff_cuda_float64_vs_cpu_float64[points_idx, distances_idx] = np.abs(
+            cpu_result_float64 - cuda_result_float64
+        ).max()
 
         _assert_matches_shapely(
             shapely_result,
             cpu_result,
-            implementation_name="CPU",
+            implementation_name="CPU float32",
             batch_size=batch_size,
             num_points=num_points_current,
             num_distances=num_distances_current,
@@ -331,13 +396,81 @@ def _run_validation_sweep(
         _assert_matches_shapely(
             shapely_result,
             cuda_result,
-            implementation_name="CUDA",
+            implementation_name="CUDA float32",
             batch_size=batch_size,
             num_points=num_points_current,
             num_distances=num_distances_current,
             atol=assert_atol,
             rtol=assert_rtol,
         )
+        _assert_matches_shapely(
+            shapely_result,
+            cpu_result_float64,
+            implementation_name="CPU float64",
+            batch_size=batch_size,
+            num_points=num_points_current,
+            num_distances=num_distances_current,
+            atol=assert_float64_atol,
+            rtol=assert_float64_rtol,
+        )
+        _assert_matches_shapely(
+            shapely_result,
+            cuda_result_float64,
+            implementation_name="CUDA float64",
+            batch_size=batch_size,
+            num_points=num_points_current,
+            num_distances=num_distances_current,
+            atol=assert_float64_atol,
+            rtol=assert_float64_rtol,
+        )
+
+
+# Helper function for timing one ACCV-Lab device and precision across a complete sweep.
+def _run_torch_timing_sweep(
+    batch_size: int,
+    nums_points: list[int],
+    nums_distances: list[int],
+    *,
+    num_runs: int,
+    device: str,
+    dtype: torch.dtype,
+    implementation_name: str,
+) -> np.ndarray:
+    runtime_ms = np.zeros((len(nums_points), len(nums_distances)), dtype=np.float64)
+    time_function = _time_cuda if device == DEVICE else _time_cpu
+
+    print(f"Running {implementation_name} sweep for batch={batch_size}, runs={num_runs}")
+    for points_idx, distances_idx, num_points_current, num_distances_current, seed in _iter_evaluation_cases(
+        batch_size, nums_points, nums_distances
+    ):
+        print(
+            f"Running {implementation_name} evaluation "
+            f"batch={batch_size}, points={num_points_current}, distances={num_distances_current}, "
+            f"runs={num_runs}"
+        )
+        points_np, distances_np = _make_evaluation_case(
+            batch_size,
+            num_points_current,
+            num_distances_current,
+            seed=seed,
+        )
+        points, distances = _make_torch_tensors_on_device(
+            points_np,
+            distances_np,
+            device=device,
+            dtype=dtype,
+        )
+        runtime_ms[points_idx, distances_idx] = (
+            time_function(
+                points,
+                distances,
+                num_runs=num_runs,
+            )
+            * 1000
+        )
+
+    _cleanup_between_implementation_sweeps()
+    return runtime_ms
 
 
 # Helper function for evaluating every point-count and distance-count pair for one batch size.
@@ -350,19 +483,21 @@ def _evaluate_batch_size(
     assert_results: bool,
     assert_atol: float,
     assert_rtol: float,
+    assert_float64_atol: float,
+    assert_float64_rtol: float,
     skip_shapely: bool,
-) -> tuple[
-    np.ndarray | None, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None
-]:
+) -> _BatchEvaluationResults:
     result_shape = (len(nums_points), len(nums_distances))
 
     shapely_runtime_ms = None if skip_shapely else np.zeros(result_shape, dtype=np.float64)
-    cuda_runtime_ms = np.zeros(result_shape, dtype=np.float64)
-    cpu_runtime_ms = np.zeros(result_shape, dtype=np.float64)
-
-    max_abs_diff_cuda = np.zeros_like(cpu_runtime_ms) if assert_results else None
-    max_abs_diff_cpu = np.zeros_like(cpu_runtime_ms) if assert_results else None
-    max_abs_diff_cuda_vs_cpu = np.zeros_like(cpu_runtime_ms) if assert_results else None
+    max_abs_diff_cuda = np.zeros(result_shape, dtype=np.float64) if assert_results else None
+    max_abs_diff_cpu = np.zeros(result_shape, dtype=np.float64) if assert_results else None
+    max_abs_diff_cuda_vs_cpu = np.zeros(result_shape, dtype=np.float64) if assert_results else None
+    max_abs_diff_cuda_float64 = np.zeros(result_shape, dtype=np.float64) if assert_results else None
+    max_abs_diff_cpu_float64 = np.zeros(result_shape, dtype=np.float64) if assert_results else None
+    max_abs_diff_cuda_float64_vs_cpu_float64 = (
+        np.zeros(result_shape, dtype=np.float64) if assert_results else None
+    )
 
     if not skip_shapely:
         print(f"Running Shapely sweep for batch={batch_size}, runs={num_runs}")
@@ -393,67 +528,42 @@ def _evaluate_batch_size(
             shapely_runtime_ms[points_idx, distances_idx] = shapely_runtime * 1000
         _cleanup_between_implementation_sweeps()
 
-    print(f"Running CPU sweep for batch={batch_size}, runs={num_runs}")
-    for points_idx, distances_idx, num_points_current, num_distances_current, seed in _iter_evaluation_cases(
-        batch_size, nums_points, nums_distances
-    ):
-        print(
-            "Running CPU evaluation "
-            f"batch={batch_size}, points={num_points_current}, distances={num_distances_current}, "
-            f"runs={num_runs}"
-        )
-        points_np, distances_np = _make_evaluation_case(
-            batch_size,
-            num_points_current,
-            num_distances_current,
-            seed=seed,
-        )
-        points_cpu, distances_cpu = _make_torch_tensors_on_device(
-            points_np,
-            distances_np,
-            device="cpu",
-        )
-
-        cpu_runtime_ms[points_idx, distances_idx] = (
-            _time_cpu(
-                points_cpu,
-                distances_cpu,
-                num_runs=num_runs,
-            )
-            * 1000
-        )
-    _cleanup_between_implementation_sweeps()
-
-    print(f"Running CUDA sweep for batch={batch_size}, runs={num_runs}")
-    for points_idx, distances_idx, num_points_current, num_distances_current, seed in _iter_evaluation_cases(
-        batch_size, nums_points, nums_distances
-    ):
-        print(
-            "Running CUDA evaluation "
-            f"batch={batch_size}, points={num_points_current}, distances={num_distances_current}, "
-            f"runs={num_runs}"
-        )
-        points_np, distances_np = _make_evaluation_case(
-            batch_size,
-            num_points_current,
-            num_distances_current,
-            seed=seed,
-        )
-        points_gpu, distances_gpu = _make_torch_tensors_on_device(
-            points_np,
-            distances_np,
-            device=DEVICE,
-        )
-
-        cuda_runtime_ms[points_idx, distances_idx] = (
-            _time_cuda(
-                points_gpu,
-                distances_gpu,
-                num_runs=num_runs,
-            )
-            * 1000
-        )
-    _cleanup_between_implementation_sweeps()
+    cpu_runtime_ms = _run_torch_timing_sweep(
+        batch_size,
+        nums_points,
+        nums_distances,
+        num_runs=num_runs,
+        device="cpu",
+        dtype=DTYPE_TORCH_FLOAT32,
+        implementation_name="CPU float32",
+    )
+    cuda_runtime_ms = _run_torch_timing_sweep(
+        batch_size,
+        nums_points,
+        nums_distances,
+        num_runs=num_runs,
+        device=DEVICE,
+        dtype=DTYPE_TORCH_FLOAT32,
+        implementation_name="CUDA float32",
+    )
+    cpu_runtime_float64_ms = _run_torch_timing_sweep(
+        batch_size,
+        nums_points,
+        nums_distances,
+        num_runs=num_runs,
+        device="cpu",
+        dtype=DTYPE_TORCH_FLOAT64,
+        implementation_name="CPU float64",
+    )
+    cuda_runtime_float64_ms = _run_torch_timing_sweep(
+        batch_size,
+        nums_points,
+        nums_distances,
+        num_runs=num_runs,
+        device=DEVICE,
+        dtype=DTYPE_TORCH_FLOAT64,
+        implementation_name="CUDA float64",
+    )
 
     if assert_results:
         _run_validation_sweep(
@@ -462,19 +572,29 @@ def _evaluate_batch_size(
             nums_distances,
             assert_atol=assert_atol,
             assert_rtol=assert_rtol,
+            assert_float64_atol=assert_float64_atol,
+            assert_float64_rtol=assert_float64_rtol,
             max_abs_diff_cpu=max_abs_diff_cpu,
             max_abs_diff_cuda=max_abs_diff_cuda,
             max_abs_diff_cuda_vs_cpu=max_abs_diff_cuda_vs_cpu,
+            max_abs_diff_cpu_float64=max_abs_diff_cpu_float64,
+            max_abs_diff_cuda_float64=max_abs_diff_cuda_float64,
+            max_abs_diff_cuda_float64_vs_cpu_float64=max_abs_diff_cuda_float64_vs_cpu_float64,
         )
         _cleanup_between_implementation_sweeps()
 
-    return (
-        shapely_runtime_ms,
-        cpu_runtime_ms,
-        cuda_runtime_ms,
-        max_abs_diff_cpu,
-        max_abs_diff_cuda,
-        max_abs_diff_cuda_vs_cpu,
+    return _BatchEvaluationResults(
+        shapely_runtime_ms=shapely_runtime_ms,
+        cpu_runtime_ms=cpu_runtime_ms,
+        cuda_runtime_ms=cuda_runtime_ms,
+        cpu_runtime_float64_ms=cpu_runtime_float64_ms,
+        cuda_runtime_float64_ms=cuda_runtime_float64_ms,
+        max_abs_diff_cpu=max_abs_diff_cpu,
+        max_abs_diff_cuda=max_abs_diff_cuda,
+        max_abs_diff_cuda_vs_cpu=max_abs_diff_cuda_vs_cpu,
+        max_abs_diff_cpu_float64=max_abs_diff_cpu_float64,
+        max_abs_diff_cuda_float64=max_abs_diff_cuda_float64,
+        max_abs_diff_cuda_float64_vs_cpu_float64=max_abs_diff_cuda_float64_vs_cpu_float64,
     )
 
 
@@ -544,13 +664,25 @@ def _parse_args() -> argparse.Namespace:
         "--assert-atol",
         type=float,
         default=DEFAULT_ASSERT_ATOL,
-        help="Absolute tolerance used when asserting results against Shapely.",
+        help="Absolute tolerance used when asserting float32 results against Shapely.",
     )
     parser.add_argument(
         "--assert-rtol",
         type=float,
         default=DEFAULT_ASSERT_RTOL,
-        help="Relative tolerance used when asserting results against Shapely.",
+        help="Relative tolerance used when asserting float32 results against Shapely.",
+    )
+    parser.add_argument(
+        "--assert-float64-atol",
+        type=float,
+        default=DEFAULT_ASSERT_FLOAT64_ATOL,
+        help="Absolute tolerance used when asserting float64 results against Shapely.",
+    )
+    parser.add_argument(
+        "--assert-float64-rtol",
+        type=float,
+        default=DEFAULT_ASSERT_FLOAT64_RTOL,
+        help="Relative tolerance used when asserting float64 results against Shapely.",
     )
     no_annotate_plots_action = parser.add_argument(
         "--no-annotate-plots",
@@ -617,14 +749,7 @@ def main() -> None:
         print(f"Using {num_runs} measured runs for batch={batch_size}")
 
         # Run evaluation & get results for one batch size (number of polylines in single call).
-        (
-            shapely_runtime_ms,
-            cpu_runtime_ms,
-            cuda_runtime_ms,
-            max_abs_diff_cpu,
-            max_abs_diff_cuda,
-            max_abs_diff_cuda_vs_cpu,
-        ) = _evaluate_batch_size(
+        results = _evaluate_batch_size(
             batch_size,
             nums_points,
             nums_distances,
@@ -632,6 +757,8 @@ def main() -> None:
             assert_results=assert_results,
             assert_atol=args.assert_atol,
             assert_rtol=args.assert_rtol,
+            assert_float64_atol=args.assert_float64_atol,
+            assert_float64_rtol=args.assert_float64_rtol,
             skip_shapely=args.skip_shapely,
         )
 
@@ -641,32 +768,77 @@ def main() -> None:
             batch_size,
             nums_points,
             nums_distances,
-            shapely_runtime_ms,
-            cpu_runtime_ms,
-            cuda_runtime_ms,
+            results.shapely_runtime_ms,
+            results.cpu_runtime_ms,
+            results.cuda_runtime_ms,
+            results.cpu_runtime_float64_ms,
+            results.cuda_runtime_float64_ms,
             args.skip_shapely,
             assert_results,
-            max_abs_diff_cpu,
-            max_abs_diff_cuda,
-            max_abs_diff_cuda_vs_cpu,
+            results.max_abs_diff_cpu,
+            results.max_abs_diff_cuda,
+            results.max_abs_diff_cuda_vs_cpu,
+            results.max_abs_diff_cpu_float64,
+            results.max_abs_diff_cuda_float64,
+            results.max_abs_diff_cuda_float64_vs_cpu_float64,
         )
 
         # Print info.
-        cuda_speedup_over_cpu = cpu_runtime_ms / cuda_runtime_ms
+        cuda_speedup_over_cpu = results.cpu_runtime_ms / results.cuda_runtime_ms
+        cuda_float64_speedup_over_cpu_float64 = (
+            results.cpu_runtime_float64_ms / results.cuda_runtime_float64_ms
+        )
         if not args.skip_shapely:
-            cuda_speedup_over_shapely = shapely_runtime_ms / cuda_runtime_ms
-            cpu_speedup_over_shapely = shapely_runtime_ms / cpu_runtime_ms
-            print(f"Average Shapely runtime [ms], batch={batch_size}:\n{shapely_runtime_ms}")
-        print(f"Average CPU runtime [ms], batch={batch_size}:\n{cpu_runtime_ms}")
-        print(f"Average CUDA runtime [ms], batch={batch_size}:\n{cuda_runtime_ms}")
+            cuda_speedup_over_shapely = results.shapely_runtime_ms / results.cuda_runtime_ms
+            cpu_speedup_over_shapely = results.shapely_runtime_ms / results.cpu_runtime_ms
+            cuda_float64_speedup_over_shapely = results.shapely_runtime_ms / results.cuda_runtime_float64_ms
+            cpu_float64_speedup_over_shapely = results.shapely_runtime_ms / results.cpu_runtime_float64_ms
+            print(f"Average Shapely float64 runtime [ms], batch={batch_size}:\n{results.shapely_runtime_ms}")
+        print(f"Average CPU float32 runtime [ms], batch={batch_size}:\n{results.cpu_runtime_ms}")
+        print(f"Average CUDA float32 runtime [ms], batch={batch_size}:\n{results.cuda_runtime_ms}")
+        print(f"Average CPU float64 runtime [ms], batch={batch_size}:\n{results.cpu_runtime_float64_ms}")
+        print(f"Average CUDA float64 runtime [ms], batch={batch_size}:\n{results.cuda_runtime_float64_ms}")
         if not args.skip_shapely:
-            print(f"CPU speedup over Shapely, batch={batch_size}:\n{cpu_speedup_over_shapely}")
-            print(f"CUDA speedup over Shapely, batch={batch_size}:\n{cuda_speedup_over_shapely}")
-        print(f"CUDA speedup over CPU, batch={batch_size}:\n{cuda_speedup_over_cpu}")
+            print(f"CPU float32 speedup over Shapely, batch={batch_size}:\n{cpu_speedup_over_shapely}")
+            print(f"CUDA float32 speedup over Shapely, batch={batch_size}:\n{cuda_speedup_over_shapely}")
+            print(
+                f"CPU float64 speedup over Shapely, batch={batch_size}:\n"
+                f"{cpu_float64_speedup_over_shapely}"
+            )
+            print(
+                f"CUDA float64 speedup over Shapely, batch={batch_size}:\n"
+                f"{cuda_float64_speedup_over_shapely}"
+            )
+        print(f"CUDA float32 speedup over CPU float32, batch={batch_size}:\n{cuda_speedup_over_cpu}")
+        print(
+            f"CUDA float64 speedup over CPU float64, batch={batch_size}:\n"
+            f"{cuda_float64_speedup_over_cpu_float64}"
+        )
         if assert_results:
-            print(f"CUDA max absolute difference to CPU, batch={batch_size}:\n{max_abs_diff_cuda_vs_cpu}")
-            print(f"CPU max absolute difference to Shapely, batch={batch_size}:\n{max_abs_diff_cpu}")
-            print(f"CUDA max absolute difference to Shapely, batch={batch_size}:\n{max_abs_diff_cuda}")
+            print(
+                f"CUDA float32 max absolute difference to CPU float32, batch={batch_size}:\n"
+                f"{results.max_abs_diff_cuda_vs_cpu}"
+            )
+            print(
+                f"CPU float32 max absolute difference to Shapely, batch={batch_size}:\n"
+                f"{results.max_abs_diff_cpu}"
+            )
+            print(
+                f"CUDA float32 max absolute difference to Shapely, batch={batch_size}:\n"
+                f"{results.max_abs_diff_cuda}"
+            )
+            print(
+                f"CUDA float64 max absolute difference to CPU float64, batch={batch_size}:\n"
+                f"{results.max_abs_diff_cuda_float64_vs_cpu_float64}"
+            )
+            print(
+                f"CPU float64 max absolute difference to Shapely, batch={batch_size}:\n"
+                f"{results.max_abs_diff_cpu_float64}"
+            )
+            print(
+                f"CUDA float64 max absolute difference to Shapely, batch={batch_size}:\n"
+                f"{results.max_abs_diff_cuda_float64}"
+            )
 
     plotted_files = plot_shapely_evaluation.plot_from_markdown_directory(
         input_dir=args.output_dir,

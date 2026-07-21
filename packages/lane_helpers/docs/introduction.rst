@@ -1,13 +1,10 @@
 Introduction
 ============
 
+The ``lane_helpers`` package provides utilities for lane-processing workloads.
+
 Polyline Sampling
 -----------------
-
-Functionality
-^^^^^^^^^^^^^
-
-The ``lane_helpers`` package provides utilities for lane-processing workloads.
 
 The main functionality is batched polyline interpolation. A polyline is a sequence of points in the
 space :math:`\mathbb{R}^D`, written as :math:`\mathbf{p}_i`, where each pair of consecutive points defines
@@ -38,76 +35,29 @@ For batches with variable numbers of points or distances, use
 Functionality to compute the total length of each polyline is also provided (through
 :func:`~accvlab.lane_helpers.polyline.lengths` and :func:`~accvlab.lane_helpers.polyline.lengths_var_size_batch`).
 
-Runtime Evaluation
-^^^^^^^^^^^^^^^^^^
+Frenet Transformation
+---------------------
 
-The runtime evaluation compares batched interpolation for both CPU and CUDA against a Shapely LineString
-reference over a grid of point counts, numbers of sampled distances, and batch sizes. Runtime plots report
-milliseconds per interpolation call, while speedup plots report the x-fold improvement over the Shapely
-reference.
+The :func:`~accvlab.lane_helpers.frenet.transform` function maps two-dimensional Cartesian points to
+Frenet coordinates relative to an ordered reference-lane polyline. For every input point, the closest
+point on the reference lane is determined and represented by:
 
-.. seealso::
+* :math:`s`, the longitudinal distance along the reference lane from its first point to the closest point.
+* :math:`d`, the signed lateral displacement from the closest point. With the default normals, positive
+  values lie to the left of the reference lane's direction and negative values lie to the right.
 
-   The evaluation script is available at ``packages/lane_helpers/evaluation/shapely_evaluation.py``. It can be
-   used to run the benchmark sweep for different problem sizes on your target system.
+The reference lane has shape ``(num_reference_points, 2)``, and the points to transform have shape
+``(num_points, 2)``. The returned tensor has shape ``(num_points, 2)``, with :math:`s` in the first column
+and :math:`d` in the second. The transformation is implemented both for the GPU and the CPU. Inputs can reside on a GPU or
+the CPU, but all tensors passed to one call must use the same device and data type.
 
-Performance depends on the batch size for both CPU and CUDA execution. CUDA parallelism scales with the number
-of polylines in the batch, so very small batch sizes may not fully utilize the GPU.
+By default, normals are derived from the reference-lane geometry. At interior lane vertices, normals from
+adjacent segments are combined to provide a consistent lateral direction. Applications that need to use other normals
+can instead provide either one normal per segment or one normal per vertex.
 
-For practical problem sizes, it is recommended to choose the implementation based primarily on where the
-tensors already live: CPU inputs should generally stay on CPU, and CUDA inputs should generally stay on CUDA.
-Moving tensors only to use a different implementation can dominate the interpolation cost.
+Per-vertex normals are interpolated along each segment. The two custom-normal modes are mutually exclusive,
+and custom normals should be unit length when :math:`d` is intended to represent distance in the input
+coordinate system.
 
-The plots below focus on batch sizes 1 and 64 as examples. The evaluation script runs for more batch sizes by
-default, and other batch sizes can be easily added.
-
-.. note::
-
-   The following measurements are intended as directional guidance. Exact runtimes depend on the used system, 
-   with performance primarily influenced by the CPU and GPU.
-
-   The plots shown here were generated on a system with an ``NVIDIA RTX 5000 Ada Generation`` GPU and an 
-   ``AMD Ryzen 9 7950X`` 16-Core Processor.
-
-.. note::
-
-   In the following runtime plots, markers highlight the smallest measured problem size, the largest measured 
-   problem size, and the 100-point/100-distance cell.
-
-   In the speedup plots, markers highlight the smallest measured problem size and the largest speedup. If speedup is not
-   above 1x everywhere, they also mark representative cells near the first matching point-count and distance-count
-   configuration where speedup exceeds 1x.
-
-Batch size 1 shows behavior for the smallest batch configuration in the benchmark:
-
-.. figure:: _generated/polyline_runtime_evaluation/batch_1_runtime_comparison.png
-   :alt: Runtime comparison heatmaps for batch size 1
-   :align: center
-   :width: 100%
-
-   Runtime comparison for batch size 1. Rows vary the number of polyline points, and columns vary the number
-   of sampled distances.
-
-.. figure:: _generated/polyline_runtime_evaluation/batch_1_speedup_comparison.png
-   :alt: Speedup comparison heatmaps for batch size 1
-   :align: center
-   :width: 100%
-
-   Speedup comparison for batch size 1.
-
-For larger batch sizes, CUDA can expose more parallel work and its speedup over the other methods typically
-becomes more pronounced. Batch size 64 shows this behavior:
-
-.. figure:: _generated/polyline_runtime_evaluation/batch_64_runtime_comparison.png
-   :alt: Runtime comparison heatmaps for batch size 64
-   :align: center
-   :width: 100%
-
-   Runtime comparison for batch size 64.
-
-.. figure:: _generated/polyline_runtime_evaluation/batch_64_speedup_comparison.png
-   :alt: Speedup comparison heatmaps for batch size 64
-   :align: center
-   :width: 100%
-
-   Speedup comparison for batch size 64.
+The transformation is performed for one reference lane, and operates on 2D coordinates. Reference lanes with fewer than two
+points, or with no nonzero-length segments, produce ``NaN`` coordinates.

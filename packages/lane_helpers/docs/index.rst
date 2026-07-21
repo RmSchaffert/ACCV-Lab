@@ -7,5 +7,7 @@ This is the documentation for the ``accvlab.lane_helpers`` package.
    :maxdepth: 1
 
    introduction
-   api
    example
+   api
+   evaluation_polyline_interpolation
+   evaluation_frenet

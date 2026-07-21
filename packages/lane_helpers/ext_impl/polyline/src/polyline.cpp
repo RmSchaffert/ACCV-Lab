@@ -27,6 +27,7 @@
 
 #include "polyline.cuh"
 #include "helper_macros.cuh"
+#include "input_checks.h"
 
 //#define PROFILE_AND_SYNC
 
@@ -36,49 +37,10 @@
 
 namespace polyline {
 
-#define CHECK_DEVICE(x) check_device(x, #x)
-#define CHECK_CONTIGUOUS(x) check_contiguous(x, #x)
-#define CHECK_TYPE(x) check_type(x, #x)
-#define CHECK_INPUT(x)   \
-    CHECK_DEVICE(x);     \
-    CHECK_CONTIGUOUS(x); \
-    CHECK_TYPE(x);
-inline void check_device(const at::Tensor& tensor, const char* description) {
-    TORCH_CHECK(tensor.is_cpu() || tensor.is_cuda(), description, " must be on CPU or CUDA");
-}
-
-inline void check_contiguous(const at::Tensor& tensor, const char* description) {
-    TORCH_CHECK(tensor.is_contiguous(), description, " must be contiguous");
-}
-
-inline void check_type(const at::Tensor& tensor, const char* description) {
-    if (tensor.is_cuda()) {
-        TORCH_CHECK(tensor.scalar_type() == torch::kFloat32 || tensor.scalar_type() == torch::kFloat64 ||
-                        tensor.scalar_type() == torch::kFloat16 || tensor.scalar_type() == torch::kBFloat16,
-                    description, " must have dtype float16, float32, float64, or bfloat16 on CUDA");
-    } else {
-        TORCH_CHECK(tensor.scalar_type() == torch::kFloat32 || tensor.scalar_type() == torch::kFloat64,
-                    description, " must have dtype float32 or float64 on CPU");
-    }
-}
-
-inline void check_same_device(const at::Tensor& lhs, const at::Tensor& rhs, const char* message) {
-    TORCH_CHECK(lhs.device() == rhs.device(), message);
-}
-
-inline void check_sample_size_type(const at::Tensor& sample_sizes, const char* description) {
-    TORCH_CHECK(sample_sizes.scalar_type() == at::kInt || sample_sizes.scalar_type() == at::kLong,
-                description, " must have dtype int32 or int64");
-}
-
-inline void check_sample_sizes(const at::Tensor& sample_sizes, int max_size, const char* description) {
-    if (sample_sizes.numel() == 0) {
-        return;
-    }
-    TORCH_CHECK(
-        !torch::any(sample_sizes < 0).item<bool>() && !torch::any(sample_sizes > max_size).item<bool>(),
-        description, " values must be in [0, ", max_size, "]");
-}
+using lane_helpers::ext_impl::check_device;
+using lane_helpers::ext_impl::check_same_device;
+using lane_helpers::ext_impl::check_sample_size_type;
+using lane_helpers::ext_impl::check_sample_sizes;
 
 at::Tensor make_external_distance_buffer(size_t size_elems, const at::TensorOptions& options) {
     // Keep external CUDA scratch memory owned by PyTorch's stream-aware allocator.

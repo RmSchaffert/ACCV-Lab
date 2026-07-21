@@ -91,14 +91,20 @@ def write_batch_results(
     shapely_runtime_ms: np.ndarray | None,
     cpu_runtime_ms: np.ndarray,
     cuda_runtime_ms: np.ndarray,
+    cpu_runtime_float64_ms: np.ndarray,
+    cuda_runtime_float64_ms: np.ndarray,
     skip_shapely: bool,
     assert_results: bool,
     max_abs_diff_cpu: np.ndarray | None,
     max_abs_diff_cuda: np.ndarray | None,
     max_abs_diff_cuda_vs_cpu: np.ndarray | None,
+    max_abs_diff_cpu_float64: np.ndarray | None,
+    max_abs_diff_cuda_float64: np.ndarray | None,
+    max_abs_diff_cuda_float64_vs_cpu_float64: np.ndarray | None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     cuda_speedup_over_cpu = cpu_runtime_ms / cuda_runtime_ms
+    cuda_float64_speedup_over_cpu_float64 = cpu_runtime_float64_ms / cuda_runtime_float64_ms
     prefix = f"batch_{batch_size}"
 
     def write_metric(
@@ -130,6 +136,8 @@ def write_batch_results(
         cpu_runtime_ms,
         scientific=True,
     )
+    write_metric("runtime_cuda_float64", cuda_runtime_float64_ms, scientific=True)
+    write_metric("runtime_cpu_float64", cpu_runtime_float64_ms, scientific=True)
     if not skip_shapely:
         write_metric(
             "speedup_cuda_vs_shapely",
@@ -141,9 +149,24 @@ def write_batch_results(
             cpu_speedup_over_shapely,
             scientific=False,
         )
+        write_metric(
+            "speedup_cuda_float64_vs_shapely",
+            shapely_runtime_ms / cuda_runtime_float64_ms,
+            scientific=False,
+        )
+        write_metric(
+            "speedup_cpu_float64_vs_shapely",
+            shapely_runtime_ms / cpu_runtime_float64_ms,
+            scientific=False,
+        )
     write_metric(
         "speedup_cuda_vs_cpu",
         cuda_speedup_over_cpu,
+        scientific=False,
+    )
+    write_metric(
+        "speedup_cuda_float64_vs_cpu_float64",
+        cuda_float64_speedup_over_cpu_float64,
         scientific=False,
     )
     if assert_results:
@@ -152,6 +175,21 @@ def write_batch_results(
             max_abs_diff_cuda_vs_cpu,
             scientific=True,
         )
+        write_metric(
+            "max_abs_diff_cuda_float64_vs_cpu_float64",
+            max_abs_diff_cuda_float64_vs_cpu_float64,
+            scientific=True,
+        )
     if assert_results and not skip_shapely:
         write_metric("max_abs_diff", max_abs_diff_cuda, scientific=True)
         write_metric("max_abs_diff_cpu", max_abs_diff_cpu, scientific=True)
+        write_metric(
+            "max_abs_diff_cuda_float64_vs_shapely",
+            max_abs_diff_cuda_float64,
+            scientific=True,
+        )
+        write_metric(
+            "max_abs_diff_cpu_float64_vs_shapely",
+            max_abs_diff_cpu_float64,
+            scientific=True,
+        )

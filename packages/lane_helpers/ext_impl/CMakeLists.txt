@@ -64,4 +64,46 @@ if(ACCVLAB_LANE_HELPERS_BUILD_CPP_TESTS)
   enable_testing()
 endif()
 
+add_library(accvlab_lane_helpers_ext_helpers INTERFACE)
+target_include_directories(accvlab_lane_helpers_ext_helpers INTERFACE
+    "${CMAKE_CURRENT_SOURCE_DIR}/_helpers/include"
+)
+
+function(accvlab_lane_helpers_add_pybind_module target output_name)
+  pybind11_add_module(${target} MODULE ${ARGN})
+
+  set_target_properties(${target} PROPERTIES
+      CXX_STANDARD 17
+      CUDA_STANDARD 17
+      OUTPUT_NAME "${output_name}"
+      PREFIX ""
+  )
+
+  target_compile_definitions(${target} PRIVATE
+      TORCH_EXTENSION_NAME=${output_name}
+      TORCH_API_INCLUDE_EXTENSION_H
+  )
+
+  target_compile_options(${target} PRIVATE ${TORCH_CXX_FLAGS_LIST})
+
+  target_link_libraries(${target} PRIVATE
+      ${TORCH_LIBRARIES}
+      ${CUDA_LIBRARIES}
+      ${TORCH_PYTHON_LIBRARY}
+      accvlab_lane_helpers_ext_helpers
+  )
+
+  target_include_directories(${target} PRIVATE
+      ${TORCH_INCLUDE_DIRS}
+      ${CUDA_INCLUDE_DIRS}
+      "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  )
+
+  install(TARGETS ${target}
+      LIBRARY DESTINATION .
+      RUNTIME DESTINATION .
+  )
+endfunction()
+
 add_subdirectory(polyline)
+add_subdirectory(frenet)

@@ -19,7 +19,6 @@
 
 #include <cstddef>
 #include <mutex>
-#include <stdexcept>
 
 #include <cuda_runtime.h>
 
@@ -30,11 +29,7 @@ namespace polyline {
 
 static constexpr int MAX_CACHED_CUDA_DEVICES = 64;
 
-static void check_non_negative_cuda_device(int device) {
-    if (device < 0) {
-        throw std::runtime_error("CUDA device index must be non-negative.");
-    }
-}
+using lane_helpers::ext_impl::check_non_negative_cuda_device;
 
 static size_t query_polyline_max_shared_full_for_device(int device) {
     cudaDeviceProp prop;

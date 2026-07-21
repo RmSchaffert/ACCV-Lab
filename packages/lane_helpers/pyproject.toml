@@ -23,6 +23,7 @@ dependencies = [
 optional = [
     "matplotlib",
     "pytest",
+    "shapely>=2.0",
 ]
 
 [tool.setuptools.packages.find]

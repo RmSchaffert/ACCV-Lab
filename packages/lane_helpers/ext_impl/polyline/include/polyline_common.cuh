@@ -20,7 +20,7 @@
 #include <cmath>
 #include <limits>
 
-#include "polyline_dtype_compat.cuh"
+#include "dtype_compat.cuh"
 
 #ifdef __CUDACC__
 // Keep scalar helpers callable from both CUDA kernels and CPU translation units.
@@ -30,6 +30,11 @@
 #endif
 
 namespace polyline {
+
+using lane_helpers::ext_impl::sqrt_compat;
+using lane_helpers::ext_impl::value_ge;
+using lane_helpers::ext_impl::value_gt;
+using lane_helpers::ext_impl::value_lt;
 
 template <typename dtype>
 POLYLINE_HOST_DEVICE_INLINE dtype polyline_nan() {
@@ -68,7 +73,7 @@ POLYLINE_HOST_DEVICE_INLINE accum_dtype compute_segment_length_common(const poin
             static_cast<accum_dtype>(first_point[d]) - static_cast<accum_dtype>(second_point[d]);
         accum_sqr += diff * diff;
     }
-    const accum_dtype segment_length = polyline_sqrt(accum_sqr);
+    const accum_dtype segment_length = sqrt_compat(accum_sqr);
     return segment_length;
 }
 
@@ -92,19 +97,19 @@ POLYLINE_HOST_DEVICE_INLINE int get_index_of_last_lower_or_equal_to_common(const
     int min_idx = 0;
     int max_idx = sequence_length - 1;
 
-    if (polyline_value_gt(sequence[0], value)) {
+    if (value_gt(sequence[0], value)) {
         return -1;
     }
-    if (polyline_value_lt(sequence[sequence_length - 1], value)) {
+    if (value_lt(sequence[sequence_length - 1], value)) {
         return sequence_length - 1;
     }
 
     while (max_idx - min_idx > 1) {
         const int curr_idx = (max_idx + min_idx) >> 1;
         const accum_dtype curr_val = sequence[curr_idx];
-        if (polyline_value_lt(curr_val, value)) {
+        if (value_lt(curr_val, value)) {
             min_idx = curr_idx;
-        } else if (polyline_value_gt(curr_val, value)) {
+        } else if (value_gt(curr_val, value)) {
             max_idx = curr_idx;
         } else {
             min_idx = curr_idx;
@@ -136,7 +141,7 @@ POLYLINE_HOST_DEVICE_INLINE void sample_at_distance_common(const point_dtype* po
         const accum_dtype dist_min = accum_distances[index_min];
         const accum_dtype dist_max = accum_distances[index_max];
         const accum_dtype dist = dist_max - dist_min;
-        if (polyline_value_ge(dist, static_cast<accum_dtype>(std::numeric_limits<accum_dtype>::epsilon()))) {
+        if (value_ge(dist, static_cast<accum_dtype>(std::numeric_limits<accum_dtype>::epsilon()))) {
             const accum_dtype weight_max = (distance_to_sample_at - dist_min) / dist;
             const accum_dtype weight_min = (dist_max - distance_to_sample_at) / dist;
             for (int d = 0; d < num_dims; ++d) {

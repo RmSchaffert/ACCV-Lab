@@ -1,12 +1,12 @@
 /*
  * Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef LANE_HELPERS_POLYLINE_DTYPE_COMPAT_CUH
-#define LANE_HELPERS_POLYLINE_DTYPE_COMPAT_CUH
+#ifndef LANE_HELPERS_EXT_IMPL_DTYPE_COMPAT_CUH
+#define LANE_HELPERS_EXT_IMPL_DTYPE_COMPAT_CUH
 
 #include <cmath>
 
@@ -30,12 +30,12 @@
 #include <cuda_fp16.h>
 #include <c10/util/BFloat16.h>
 #include <c10/util/Half.h>
-#define POLYLINE_DTYPE_COMPAT_HOST_DEVICE_INLINE __host__ __device__ __forceinline__
+#define LANE_HELPERS_DTYPE_COMPAT_HOST_DEVICE_INLINE __host__ __device__ __forceinline__
 #else
-#define POLYLINE_DTYPE_COMPAT_HOST_DEVICE_INLINE inline
+#define LANE_HELPERS_DTYPE_COMPAT_HOST_DEVICE_INLINE inline
 #endif
 
-namespace polyline {
+namespace lane_helpers::ext_impl {
 
 #ifdef __CUDACC__
 template <typename dtype>
@@ -44,7 +44,8 @@ __device__ __forceinline__ dtype shfl_xor_sync_compat(unsigned mask, dtype val, 
 }
 
 template <>
-__device__ __forceinline__ c10::Half shfl_xor_sync_compat(unsigned mask, c10::Half val, int laneMask) {
+__device__ __forceinline__ c10::Half shfl_xor_sync_compat(unsigned mask, c10::Half val,
+                                                          int laneMask) {
     return c10::Half(__shfl_xor_sync(mask, static_cast<__half>(val), laneMask));
 }
 
@@ -56,72 +57,91 @@ __device__ __forceinline__ c10::BFloat16 shfl_xor_sync_compat(unsigned mask, c10
 #endif
 
 template <typename dtype>
-POLYLINE_DTYPE_COMPAT_HOST_DEVICE_INLINE bool polyline_value_lt(dtype lhs, dtype rhs) {
+LANE_HELPERS_DTYPE_COMPAT_HOST_DEVICE_INLINE bool value_lt(dtype lhs, dtype rhs) {
     return lhs < rhs;
 }
 
 template <typename dtype>
-POLYLINE_DTYPE_COMPAT_HOST_DEVICE_INLINE bool polyline_value_gt(dtype lhs, dtype rhs) {
+LANE_HELPERS_DTYPE_COMPAT_HOST_DEVICE_INLINE bool value_gt(dtype lhs, dtype rhs) {
     return lhs > rhs;
 }
 
 template <typename dtype>
-POLYLINE_DTYPE_COMPAT_HOST_DEVICE_INLINE bool polyline_value_ge(dtype lhs, dtype rhs) {
+LANE_HELPERS_DTYPE_COMPAT_HOST_DEVICE_INLINE bool value_ge(dtype lhs, dtype rhs) {
     return lhs >= rhs;
 }
 
 #ifdef __CUDACC__
 template <>
-POLYLINE_DTYPE_COMPAT_HOST_DEVICE_INLINE bool polyline_value_lt<c10::Half>(c10::Half lhs, c10::Half rhs) {
+LANE_HELPERS_DTYPE_COMPAT_HOST_DEVICE_INLINE bool value_lt<c10::Half>(c10::Half lhs,
+                                                                      c10::Half rhs) {
     return __hlt(static_cast<__half>(lhs), static_cast<__half>(rhs));
 }
 
 template <>
-POLYLINE_DTYPE_COMPAT_HOST_DEVICE_INLINE bool polyline_value_gt<c10::Half>(c10::Half lhs, c10::Half rhs) {
+LANE_HELPERS_DTYPE_COMPAT_HOST_DEVICE_INLINE bool value_gt<c10::Half>(c10::Half lhs,
+                                                                      c10::Half rhs) {
     return __hgt(static_cast<__half>(lhs), static_cast<__half>(rhs));
 }
 
 template <>
-POLYLINE_DTYPE_COMPAT_HOST_DEVICE_INLINE bool polyline_value_ge<c10::Half>(c10::Half lhs, c10::Half rhs) {
+LANE_HELPERS_DTYPE_COMPAT_HOST_DEVICE_INLINE bool value_ge<c10::Half>(c10::Half lhs,
+                                                                      c10::Half rhs) {
     return __hge(static_cast<__half>(lhs), static_cast<__half>(rhs));
 }
 
 template <>
-POLYLINE_DTYPE_COMPAT_HOST_DEVICE_INLINE bool polyline_value_lt<c10::BFloat16>(c10::BFloat16 lhs,
-                                                                               c10::BFloat16 rhs) {
+LANE_HELPERS_DTYPE_COMPAT_HOST_DEVICE_INLINE bool value_lt<c10::BFloat16>(
+    c10::BFloat16 lhs, c10::BFloat16 rhs) {
     return __hlt(static_cast<__nv_bfloat16>(lhs), static_cast<__nv_bfloat16>(rhs));
 }
 
 template <>
-POLYLINE_DTYPE_COMPAT_HOST_DEVICE_INLINE bool polyline_value_gt<c10::BFloat16>(c10::BFloat16 lhs,
-                                                                               c10::BFloat16 rhs) {
+LANE_HELPERS_DTYPE_COMPAT_HOST_DEVICE_INLINE bool value_gt<c10::BFloat16>(
+    c10::BFloat16 lhs, c10::BFloat16 rhs) {
     return __hgt(static_cast<__nv_bfloat16>(lhs), static_cast<__nv_bfloat16>(rhs));
 }
 
 template <>
-POLYLINE_DTYPE_COMPAT_HOST_DEVICE_INLINE bool polyline_value_ge<c10::BFloat16>(c10::BFloat16 lhs,
-                                                                               c10::BFloat16 rhs) {
+LANE_HELPERS_DTYPE_COMPAT_HOST_DEVICE_INLINE bool value_ge<c10::BFloat16>(
+    c10::BFloat16 lhs, c10::BFloat16 rhs) {
     return __hge(static_cast<__nv_bfloat16>(lhs), static_cast<__nv_bfloat16>(rhs));
 }
 #endif
 
 template <typename dtype>
-POLYLINE_DTYPE_COMPAT_HOST_DEVICE_INLINE dtype polyline_sqrt(dtype value) {
+LANE_HELPERS_DTYPE_COMPAT_HOST_DEVICE_INLINE dtype sqrt_compat(dtype value) {
     return sqrt(value);
 }
 
 #ifdef __CUDACC__
-POLYLINE_DTYPE_COMPAT_HOST_DEVICE_INLINE c10::Half polyline_sqrt(c10::Half value) {
+LANE_HELPERS_DTYPE_COMPAT_HOST_DEVICE_INLINE c10::Half sqrt_compat(c10::Half value) {
     return static_cast<c10::Half>(sqrtf(static_cast<float>(value)));
 }
 
-POLYLINE_DTYPE_COMPAT_HOST_DEVICE_INLINE c10::BFloat16 polyline_sqrt(c10::BFloat16 value) {
+LANE_HELPERS_DTYPE_COMPAT_HOST_DEVICE_INLINE c10::BFloat16 sqrt_compat(c10::BFloat16 value) {
     return static_cast<c10::BFloat16>(sqrtf(static_cast<float>(value)));
+}
+
+__device__ __forceinline__ float rsqrt_compat(float value) {
+    return rsqrtf(value);
+}
+
+__device__ __forceinline__ double rsqrt_compat(double value) {
+    return rsqrt(value);
+}
+
+__device__ __forceinline__ c10::Half rsqrt_compat(c10::Half value) {
+    return static_cast<c10::Half>(rsqrtf(static_cast<float>(value)));
+}
+
+__device__ __forceinline__ c10::BFloat16 rsqrt_compat(c10::BFloat16 value) {
+    return static_cast<c10::BFloat16>(rsqrtf(static_cast<float>(value)));
 }
 #endif
 
-}  // namespace polyline
+}  // namespace lane_helpers::ext_impl
 
-#undef POLYLINE_DTYPE_COMPAT_HOST_DEVICE_INLINE
+#undef LANE_HELPERS_DTYPE_COMPAT_HOST_DEVICE_INLINE
 
-#endif  // LANE_HELPERS_POLYLINE_DTYPE_COMPAT_CUH
+#endif  // LANE_HELPERS_EXT_IMPL_DTYPE_COMPAT_CUH

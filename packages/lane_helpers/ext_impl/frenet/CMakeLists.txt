@@ -12,18 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from importlib.metadata import PackageNotFoundError, version
-
-from . import frenet, polyline
-
-try:
-    __version__ = version("accvlab.lane_helpers")
-except PackageNotFoundError:
-    __version__ = "0.0.0"
-
-
-__all__ = [
-    "__version__",
-    "frenet",
-    "polyline",
-]
+accvlab_lane_helpers_add_pybind_module(accvlab_lane_helpers_frenet _frenet
+    src/frenet_trafo.cu
+    src/frenet_trafo_cpu.cpp
+    src/frenet_trafo.cpp
+)

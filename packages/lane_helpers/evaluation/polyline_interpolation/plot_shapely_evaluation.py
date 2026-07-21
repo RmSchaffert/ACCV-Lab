@@ -48,15 +48,34 @@ class _MetricPlotConfig:
 
 
 _METRIC_PLOT_CONFIGS = {
-    "runtime_shapely": _MetricPlotConfig("Shapely", annotation="runtime"),
-    "runtime_cuda": _MetricPlotConfig("CUDA", annotation="runtime"),
-    "runtime_cpu": _MetricPlotConfig("CPU", annotation="runtime"),
-    "speedup_cuda_vs_shapely": _MetricPlotConfig("CUDA vs. Shapely", annotation="speedup"),
-    "speedup_cpu_vs_shapely": _MetricPlotConfig("CPU vs. Shapely", annotation="speedup"),
-    "speedup_cuda_vs_cpu": _MetricPlotConfig("CUDA vs. CPU", annotation="speedup"),
+    "runtime_shapely": _MetricPlotConfig("Shapely float64", annotation="runtime"),
+    "runtime_cuda": _MetricPlotConfig("ACCV-Lab CUDA float32", annotation="runtime"),
+    "runtime_cpu": _MetricPlotConfig("ACCV-Lab CPU float32", annotation="runtime"),
+    "runtime_cuda_float64": _MetricPlotConfig("ACCV-Lab CUDA float64", annotation="runtime"),
+    "runtime_cpu_float64": _MetricPlotConfig("ACCV-Lab CPU float64", annotation="runtime"),
+    "speedup_cuda_vs_shapely": _MetricPlotConfig("CUDA float32 vs. Shapely", annotation="speedup"),
+    "speedup_cpu_vs_shapely": _MetricPlotConfig("CPU float32 vs. Shapely", annotation="speedup"),
+    "speedup_cuda_vs_cpu": _MetricPlotConfig("CUDA vs. CPU float32", annotation="speedup"),
+    "speedup_cuda_float64_vs_shapely": _MetricPlotConfig(
+        "CUDA float64 vs. Shapely",
+        annotation="speedup",
+    ),
+    "speedup_cpu_float64_vs_shapely": _MetricPlotConfig(
+        "CPU float64 vs. Shapely",
+        annotation="speedup",
+    ),
+    "speedup_cuda_float64_vs_cpu_float64": _MetricPlotConfig(
+        "CUDA vs. CPU float64",
+        annotation="speedup",
+    ),
     "max_abs_diff_cuda_vs_cpu": _MetricPlotConfig("CUDA max abs. difference to CPU"),
     "max_abs_diff": _MetricPlotConfig("CUDA max abs. difference to Shapely"),
     "max_abs_diff_cpu": _MetricPlotConfig("CPU max abs. difference to Shapely"),
+    "max_abs_diff_cuda_float64_vs_cpu_float64": _MetricPlotConfig(
+        "CUDA float64 max abs. difference to CPU float64"
+    ),
+    "max_abs_diff_cuda_float64_vs_shapely": _MetricPlotConfig("CUDA float64 max abs. difference to Shapely"),
+    "max_abs_diff_cpu_float64_vs_shapely": _MetricPlotConfig("CPU float64 max abs. difference to Shapely"),
 }
 _SHAPELY_DEPENDENT_METRICS = frozenset(
     {
@@ -65,6 +84,10 @@ _SHAPELY_DEPENDENT_METRICS = frozenset(
         "speedup_cpu_vs_shapely",
         "max_abs_diff",
         "max_abs_diff_cpu",
+        "speedup_cuda_float64_vs_shapely",
+        "speedup_cpu_float64_vs_shapely",
+        "max_abs_diff_cuda_float64_vs_shapely",
+        "max_abs_diff_cpu_float64_vs_shapely",
     }
 )
 _RUNTIME_METRICS_WITH_SHAPELY = ("runtime_shapely", "runtime_cpu", "runtime_cuda")
@@ -75,6 +98,18 @@ _SPEEDUP_METRICS_WITH_SHAPELY = (
     "speedup_cuda_vs_cpu",
 )
 _SPEEDUP_METRICS_WITHOUT_SHAPELY = ("speedup_cuda_vs_cpu",)
+_RUNTIME_FLOAT64_METRICS_WITH_SHAPELY = (
+    "runtime_shapely",
+    "runtime_cpu_float64",
+    "runtime_cuda_float64",
+)
+_RUNTIME_FLOAT64_METRICS_WITHOUT_SHAPELY = ("runtime_cpu_float64", "runtime_cuda_float64")
+_SPEEDUP_FLOAT64_METRICS_WITH_SHAPELY = (
+    "speedup_cpu_float64_vs_shapely",
+    "speedup_cuda_float64_vs_shapely",
+    "speedup_cuda_float64_vs_cpu_float64",
+)
+_SPEEDUP_FLOAT64_METRICS_WITHOUT_SHAPELY = ("speedup_cuda_float64_vs_cpu_float64",)
 
 
 # Helper function for formatting speedup values in tables and annotations.
@@ -392,10 +427,10 @@ def _plot_metric_comparison(
     figure_title: str,
     filename: Path,
     annotate_plots: bool,
-) -> None:
+) -> bool:
     available_metric_names = tuple(metric_name for metric_name in metric_names if metric_name in metric_data)
     if not available_metric_names:
-        return
+        return False
 
     subplot_width = _PLOT_FIGSIZE[0] if len(available_metric_names) == 1 else _COMPARISON_SUBPLOT_WIDTH
     fig, axes = plt.subplots(
@@ -421,6 +456,7 @@ def _plot_metric_comparison(
         )
     fig.savefig(filename)
     plt.close(fig)
+    return True
 
 
 # Helper function for writing comparison plots whose subplot counts depend on Shapely availability.
@@ -434,37 +470,64 @@ def _write_comparison_outputs(
     has_shapely_results: bool,
     annotate_plots: bool,
 ) -> list[Path]:
-    runtime_metric_names = (
+    runtime_float32_metric_names = (
         _RUNTIME_METRICS_WITH_SHAPELY if has_shapely_results else _RUNTIME_METRICS_WITHOUT_SHAPELY
     )
-    speedup_metric_names = (
+    speedup_float32_metric_names = (
         _SPEEDUP_METRICS_WITH_SHAPELY if has_shapely_results else _SPEEDUP_METRICS_WITHOUT_SHAPELY
     )
+    runtime_float64_metric_names = (
+        _RUNTIME_FLOAT64_METRICS_WITH_SHAPELY
+        if has_shapely_results
+        else _RUNTIME_FLOAT64_METRICS_WITHOUT_SHAPELY
+    )
+    speedup_float64_metric_names = (
+        _SPEEDUP_FLOAT64_METRICS_WITH_SHAPELY
+        if has_shapely_results
+        else _SPEEDUP_FLOAT64_METRICS_WITHOUT_SHAPELY
+    )
     prefix = f"batch_{batch_size}"
-    comparison_files = [
-        output_dir / f"{prefix}_runtime_comparison.png",
-        output_dir / f"{prefix}_speedup_comparison.png",
+    plot_specs = [
+        (
+            runtime_float32_metric_names,
+            "Runtime [ms] — ACCV-Lab float32",
+            output_dir / f"{prefix}_runtime_comparison.png",
+        ),
+        (
+            speedup_float32_metric_names,
+            "Speedup [x-fold] — ACCV-Lab float32",
+            output_dir / f"{prefix}_speedup_comparison.png",
+        ),
     ]
-    _plot_metric_comparison(
-        runtime_metric_names,
-        metric_data,
-        nums_points,
-        nums_distances,
-        batch_size=batch_size,
-        figure_title="Runtime [ms]",
-        filename=comparison_files[0],
-        annotate_plots=annotate_plots,
-    )
-    _plot_metric_comparison(
-        speedup_metric_names,
-        metric_data,
-        nums_points,
-        nums_distances,
-        batch_size=batch_size,
-        figure_title="Speedup [x-fold]",
-        filename=comparison_files[1],
-        annotate_plots=annotate_plots,
-    )
+    has_float64_results = "runtime_cpu_float64" in metric_data or "runtime_cuda_float64" in metric_data
+    if has_float64_results:
+        plot_specs.extend(
+            [
+                (
+                    runtime_float64_metric_names,
+                    "Runtime [ms] — ACCV-Lab float64",
+                    output_dir / f"{prefix}_runtime_float64_comparison.png",
+                ),
+                (
+                    speedup_float64_metric_names,
+                    "Speedup [x-fold] — ACCV-Lab float64",
+                    output_dir / f"{prefix}_speedup_float64_comparison.png",
+                ),
+            ]
+        )
+    comparison_files: list[Path] = []
+    for metric_names, figure_title, filename in plot_specs:
+        if _plot_metric_comparison(
+            metric_names,
+            metric_data,
+            nums_points,
+            nums_distances,
+            batch_size=batch_size,
+            figure_title=figure_title,
+            filename=filename,
+            annotate_plots=annotate_plots,
+        ):
+            comparison_files.append(filename)
     return comparison_files
 
 

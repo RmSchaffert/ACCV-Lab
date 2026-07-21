@@ -43,6 +43,7 @@ clean:
 	rm -rf $(BUILDDIR)/
 	rm -rf api/generated/
 	rm -rf ../packages/*/docs/_generated/
+	rm -rf contained_package_docs_mirror/*/
 
 # Auto-build documentation (watches for changes)
 livehtml: sync-readme generate
