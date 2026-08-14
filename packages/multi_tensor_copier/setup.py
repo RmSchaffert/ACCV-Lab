@@ -50,6 +50,7 @@ def get_extensions():
         CUDAExtension(
             name="accvlab.multi_tensor_copier._ext",
             sources=[
+                "accvlab/multi_tensor_copier/csrc/copy_plan.cpp",
                 "accvlab/multi_tensor_copier/csrc/multi_tensor_copier.cpp",
             ],
             extra_compile_args={

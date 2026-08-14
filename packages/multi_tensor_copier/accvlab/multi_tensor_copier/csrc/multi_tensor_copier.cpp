@@ -16,6 +16,8 @@
 
 #include <torch/extension.h>
 
+#include "copy_plan.h"
+
 #include <ATen/Parallel.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
@@ -33,7 +35,6 @@
 #include <exception>
 #include <functional>
 #include <future>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -46,6 +47,11 @@
 namespace py = pybind11;
 
 namespace {
+
+using accvlab::multi_tensor_copier::internal::aligned_slice_offset_bytes;
+using accvlab::multi_tensor_copier::internal::compute_pack_plan;
+using accvlab::multi_tensor_copier::internal::packed_buffer_alignment_bytes;
+using accvlab::multi_tensor_copier::internal::PackPlan;
 
 enum class NodeKind {
     List,
@@ -425,247 +431,6 @@ class CopyThreadPool {
     bool stop_{false};
 };
 
-// A precomputed plan for the optional "pack many small CPU tensors into one staging buffer" fast path.
-// When enabled, multiple small contiguous CPU tensors (mix of different dtypes allowed) are copied into a
-// single packed *byte* buffer (pinned or pageable), transferred with a single H2D, and then reconstructed as
-// per-tensor views sharing the packed GPU storage.
-//
-// For each input i: byte_offset_by_input[i] is the starting *byte* offset inside the packed buffer,
-// or -1 if this input is not packed.
-struct PackPlan {
-    // For each input leaf i: starting byte offset inside its chunk, or -1 if not packed.
-    // IMPORTANT: This is checked for all tensors, not only the packed ones, and not only if packing is
-    //            enabled. Therefore, it has to be initialized with -1 for all non-packed inputs.
-    std::vector<int64_t> byte_offset_by_input;  // -1 => not packed
-    // For each input leaf i: which chunk it belongs to, or -1 if not packed.
-    std::vector<int64_t> chunk_index_by_input;  // -1 => not packed
-    // Byte size of each chunk (one entry per chunk).
-    std::vector<int64_t> chunk_sizes;
-    // Whether packing is enabled for this call (if false, treat everything as "not packed").
-    bool enabled{false};
-};
-
-static inline int64_t round_up_i64(int64_t x, int64_t a) {
-    if (a <= 1) {
-        return x;
-    }
-    const int64_t rem = x % a;
-    const int64_t res = rem == 0 ? x : (x + (a - rem));
-    return res;
-}
-
-static inline int64_t next_pow2_i64(int64_t x) {
-    if (x <= 1) {
-        return 1;
-    }
-    // Round up to the next power of two (clamped to int64 range).
-    uint64_t v = static_cast<uint64_t>(x - 1);
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    v |= v >> 32;
-    v += 1;
-    if (v > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-        return std::numeric_limits<int64_t>::max();
-    }
-    return static_cast<int64_t>(v);
-}
-
-static inline int64_t packed_buffer_alignment_bytes(const CopyState& cs) {
-    // Ensure the packed buffer itself is aligned to at least this many bytes.
-    // Also round up to a power-of-two so we can use bit-masking for pointer alignment.
-    const int64_t requested = std::max<int64_t>(16, cs.min_packed_alignment_bytes);
-    return next_pow2_i64(requested);
-}
-
-static inline int64_t aligned_slice_offset_bytes(const void* base_ptr, int64_t alignment_pow2) {
-    if (alignment_pow2 <= 1) {
-        return 0;
-    }
-    const uintptr_t base = reinterpret_cast<uintptr_t>(base_ptr);
-    const uintptr_t a = static_cast<uintptr_t>(alignment_pow2);
-    const uintptr_t aligned = (base + (a - 1)) & ~(a - 1);
-    int64_t off = static_cast<int64_t>(aligned - base);
-    return off;
-}
-
-// Bucket ordering key: clamp a required alignment to {16,8,4,2,1} by rounding down to the nearest bucket <= 16.
-// IMPORTANT: This is only used for ordering; the actual per-tensor alignment is preserved separately.
-static inline int64_t pack_bucket_key(int64_t required_align) {
-    if (required_align >= 16) {
-        return 16;
-    }
-    if (required_align >= 8) {
-        return 8;
-    }
-    if (required_align >= 4) {
-        return 4;
-    }
-    if (required_align >= 2) {
-        return 2;
-    }
-    return 1;
-}
-
-// Packing candidate: an input tensor i that can be packed into the CPU staging byte buffer.
-struct PackCandidate {
-    size_t idx;
-    int64_t bytes;
-    int64_t required_align;
-};
-
-// Buckets of packing candidates in descending alignment order.
-// Note: complex128 element_size() is 16, complex64 is 8.
-struct PackBuckets {
-    std::vector<PackCandidate> a16;
-    std::vector<PackCandidate> a8;
-    std::vector<PackCandidate> a4;
-    std::vector<PackCandidate> a2;
-    std::vector<PackCandidate> a1;
-
-    void add(PackCandidate c) {
-        switch (pack_bucket_key(c.required_align)) {
-            case 16:
-                a16.push_back(c);
-                break;
-            case 8:
-                a8.push_back(c);
-                break;
-            case 4:
-                a4.push_back(c);
-                break;
-            case 2:
-                a2.push_back(c);
-                break;
-            default:
-                a1.push_back(c);
-                break;
-        }
-    }
-
-    template <typename F>
-    void for_each_bucket_desc(F&& f) const {
-        f(16, a16);
-        f(8, a8);
-        f(4, a4);
-        f(2, a2);
-        f(1, a1);
-    }
-};
-
-static std::optional<PackCandidate> make_pack_candidate(const CopyState& copy_state, size_t i,
-                                                        int64_t min_align) {
-    // Heuristic thresholds: only pack "small" tensors.
-    constexpr int64_t kPackMaxBytesPerTensor = 256 * 1024;  // 256KB
-
-    const auto& in = copy_state.inputs[i];
-    // Only consider CPU tensors that will be transferred to CUDA.
-    if (!in.device().is_cpu() || in.device() == copy_state.target_device) {
-        return std::nullopt;
-    }
-    // Packing requires a flat contiguous view.
-    if (!in.is_contiguous()) {
-        return std::nullopt;
-    }
-    const int64_t bytes = in.numel() * in.element_size();
-    // Skip tensors that are too big; packing targets "many tiny tensors" overhead.
-    if (bytes == 0 || bytes > kPackMaxBytesPerTensor) {
-        return std::nullopt;
-    }
-    const int64_t elem_sz = static_cast<int64_t>(in.element_size());
-    // Effective alignment must be >= requested minimum AND must guarantee element alignment.
-    // If min_align is not a multiple of elem_sz, round up to the next multiple to preserve
-    // the invariant that byte_offset % elem_sz == 0.
-    int64_t required_align = std::max<int64_t>(min_align, elem_sz);
-    required_align = round_up_i64(required_align, elem_sz);
-    return PackCandidate{i, bytes, required_align};
-}
-
-// Assign byte offsets within chunked packed buffers for each candidate tensor, processing
-// alignment buckets in descending order to minimise inter-tensor padding.  When a tensor
-// would exceed `max_chunk_bytes` in the current chunk, a new chunk is started.  Populates
-// `pack_plan.byte_offset_by_input`, `chunk_index_by_input`, and `chunk_sizes`.
-static void layout_packed_offsets(const PackBuckets& buckets, PackPlan& pack_plan, int64_t& packed_count,
-                                  int64_t max_chunk_bytes) {
-    int64_t cursor = 0;
-    int64_t chunk_idx = 0;
-    packed_count = 0;
-
-    auto finalize_chunk = [&]() {
-        if (cursor > 0) {
-            pack_plan.chunk_sizes.push_back(cursor);
-            cursor = 0;
-            ++chunk_idx;
-        }
-    };
-
-    auto pack_bucket = [&](int64_t bucket_align, const std::vector<PackCandidate>& bucket) {
-        if (bucket.empty()) {
-            return;
-        }
-        for (const auto& c : bucket) {
-            int64_t aligned_cursor = round_up_i64(cursor, c.required_align);
-            if (aligned_cursor + c.bytes > max_chunk_bytes && cursor > 0) {
-                finalize_chunk();
-                aligned_cursor = round_up_i64(cursor, c.required_align);
-            }
-            cursor = aligned_cursor;
-            pack_plan.byte_offset_by_input[c.idx] = cursor;
-            pack_plan.chunk_index_by_input[c.idx] = chunk_idx;
-            cursor += c.bytes;
-            packed_count += 1;
-        }
-    };
-
-    buckets.for_each_bucket_desc(pack_bucket);
-    if (cursor > 0) {
-        pack_plan.chunk_sizes.push_back(cursor);
-    }
-}
-
-// Decide whether to enable the packed-CPU-tensors fast path and, if enabled, compute
-// per-tensor chunk assignments and byte offsets within each chunk.
-static PackPlan compute_pack_plan(const CopyState& copy_state) {
-    PackPlan pack_plan;
-    const size_t n = copy_state.inputs.size();
-    pack_plan.byte_offset_by_input.assign(n, -1);
-    pack_plan.chunk_index_by_input.assign(n, -1);
-
-    if (!copy_state.pack_cpu_tensors || !copy_state.target_device.is_cuda()) {
-        return pack_plan;
-    }
-
-    // We only pack tensors that:
-    // - are on CPU (and not already on the target device),
-    // - are contiguous (so we can treat them as a flat buffer),
-    // - are "small enough" individually,
-    //
-    // Mixed-dtype packing: we pack raw bytes and reconstruct typed tensors as views
-    // sharing the packed GPU storage.
-    const int64_t min_align = std::max<int64_t>(1, copy_state.min_packed_alignment_bytes);
-    PackBuckets buckets;
-    for (size_t i = 0; i < n; ++i) {
-        if (auto cand = make_pack_candidate(copy_state, i, min_align)) {
-            buckets.add(*cand);
-        }
-    }
-
-    int64_t packed_count = 0;
-    layout_packed_offsets(buckets, pack_plan, packed_count, copy_state.max_packed_chunk_bytes);
-
-    if (packed_count >= 2 && !pack_plan.chunk_sizes.empty()) {
-        pack_plan.enabled = true;
-    } else {
-        pack_plan.enabled = false;
-        pack_plan.chunk_sizes.clear();
-        std::fill(pack_plan.byte_offset_by_input.begin(), pack_plan.byte_offset_by_input.end(), -1);
-        std::fill(pack_plan.chunk_index_by_input.begin(), pack_plan.chunk_index_by_input.end(), -1);
-    }
-    return pack_plan;
-}
-
 // Allocate staging buffers required by the chosen plans:
 // - packed CPU buffer (pinned or pageable) if packing is enabled
 // - per-tensor pinned buffers for remaining CPU tensors if pinning is enabled
@@ -676,7 +441,7 @@ static void allocate_staging_buffers(CopyState& copy_state, const PackPlan& pack
     if (pack_plan.enabled) {
         auto opts = at::TensorOptions().dtype(at::kByte).device(c10::kCPU).pinned_memory(
             copy_state.use_pinned_staging);
-        const int64_t alignment = packed_buffer_alignment_bytes(copy_state);
+        const int64_t alignment = packed_buffer_alignment_bytes(copy_state.min_packed_alignment_bytes);
         copy_state.packed_cpu_chunks_full.reserve(pack_plan.chunk_sizes.size());
         copy_state.packed_cpu_chunks.reserve(pack_plan.chunk_sizes.size());
         for (int64_t chunk_bytes : pack_plan.chunk_sizes) {
@@ -769,7 +534,7 @@ static void prepare_packed_transfers(CopyState& copy_state, const PackPlan& pack
     copy_state.target_stream_used = true;
 
     auto gpu_opts = at::TensorOptions().dtype(at::kByte).device(copy_state.target_device);
-    const int64_t alignment = packed_buffer_alignment_bytes(copy_state);
+    const int64_t alignment = packed_buffer_alignment_bytes(copy_state.min_packed_alignment_bytes);
 
     // Allocate all GPU buffers before any H2D transfer is submitted.
     const size_t num_chunks = pack_plan.chunk_sizes.size();
@@ -978,7 +743,9 @@ static void schedule_copies(CopyState& copy_state) {
     copy_state.target_stream_used = false;
     copy_state.src_streams_used.clear();
 
-    PackPlan pack_plan = compute_pack_plan(copy_state);
+    PackPlan pack_plan =
+        compute_pack_plan(copy_state.inputs, copy_state.target_device, copy_state.pack_cpu_tensors,
+                          copy_state.min_packed_alignment_bytes, copy_state.max_packed_chunk_bytes);
 
     allocate_staging_buffers(copy_state, pack_plan);
     fill_cpu_staging_buffers(copy_state, pack_plan);
