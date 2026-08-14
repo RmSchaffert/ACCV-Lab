@@ -69,6 +69,7 @@ def start_copy(
     pack_cpu_tensors: bool = True,
     min_packed_alignment_bytes: int = 16,
     max_packed_chunk_bytes: int = 32 * 1024 * 1024,
+    max_h2d_transfer_chunk_bytes: int = 0,
     use_background_thread: bool = True,
 ) -> AsyncCopyHandle:
     """Asynchronously copy tensors in a nested structure to ``device``.
@@ -128,6 +129,10 @@ def start_copy(
             data plus inter-tensor alignment padding; the actual allocation may be slightly larger to
             satisfy buffer-start alignment).  When the total packed data exceeds this limit, multiple
             packed chunks are allocated and transferred.  Defaults to 32 MB.
+        max_h2d_transfer_chunk_bytes: Maximum payload size in bytes of each H2D transfer. When
+            greater than zero, H2D transfers are split into contiguous, element-aligned chunks and
+            only one chunk is submitted at a time. A value of zero preserves the standard transfer
+            behavior. Defaults to zero.
         use_background_thread: When ``True``, the copy orchestration (buffer allocation, staging,
             and CUDA copy submission) runs on a C++ background thread (from a shared pool) so that this
             function returns before the copies complete. Note that CPU staging is done parallelly regardless
@@ -155,6 +160,12 @@ def start_copy(
             handle = start_copy(data, "cpu")
             result = handle.get()  # [tensor([1, 2, 3]), tensor([4, 5, 6])]
     """
+    if max_h2d_transfer_chunk_bytes < 0:
+        raise ValueError(
+            "max_h2d_transfer_chunk_bytes must be greater than or equal to zero, "
+            f"got {max_h2d_transfer_chunk_bytes}"
+        )
+
     dev = torch.device(device)
     h = _ext.start_copy(
         data,
@@ -164,6 +175,7 @@ def start_copy(
         bool(pack_cpu_tensors),
         int(min_packed_alignment_bytes),
         int(max_packed_chunk_bytes),
+        int(max_h2d_transfer_chunk_bytes),
     )
     handle = AsyncCopyHandle(h)
     return handle

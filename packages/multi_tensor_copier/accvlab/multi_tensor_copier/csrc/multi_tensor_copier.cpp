@@ -166,16 +166,16 @@ static Node traverse_build_tree_impl(const py::handle& obj, const PyConversionCt
     if (py::isinstance<py::list>(obj)) {
         auto in_list = py::reinterpret_borrow<py::list>(obj);
         const ssize_t n = static_cast<ssize_t>(in_list.size());
-        const Node out = traverse_sequence(
-            NodeKind::List, n, [&](ssize_t i) { return in_list[i]; }, ctx, inputs);
+        const Node out =
+            traverse_sequence(NodeKind::List, n, [&](ssize_t i) { return in_list[i]; }, ctx, inputs);
         return out;
     }
 
     if (py::isinstance<py::tuple>(obj)) {
         auto in_tup = py::reinterpret_borrow<py::tuple>(obj);
         const ssize_t n = static_cast<ssize_t>(in_tup.size());
-        const Node out = traverse_sequence(
-            NodeKind::Tuple, n, [&](ssize_t i) { return in_tup[i]; }, ctx, inputs);
+        const Node out =
+            traverse_sequence(NodeKind::Tuple, n, [&](ssize_t i) { return in_tup[i]; }, ctx, inputs);
         return out;
     }
 
@@ -259,6 +259,8 @@ struct CopyState {
     // Maximum bytes per packed chunk.  When the total packed data exceeds this, multiple
     // chunks are allocated, each transferred with its own H2D copy.
     int64_t max_packed_chunk_bytes{32 * 1024 * 1024};
+    // Maximum bytes per H2D transfer.  Zero preserves the standard direct-copy behavior.
+    int64_t max_h2d_transfer_chunk_bytes{0};
 
     // CUDA streams captured at call time (on the user's thread) so that work enqueued by
     // the copier is correctly ordered with respect to the user's preceding GPU operations.
@@ -283,6 +285,81 @@ struct CopyState {
     // Completion signal for background submission.
     // `done` becomes ready once staging + copy submission has finished (or failed).
     std::shared_future<void> done;
+};
+
+struct H2DTransferRequest {
+    at::Tensor destination;
+    at::Tensor source;
+    bool non_blocking{false};
+};
+
+class H2DTransferSubmitter {
+   public:
+    explicit H2DTransferSubmitter(CopyState& copy_state) : copy_state_(copy_state) {}
+
+    void submit(at::Tensor destination, const at::Tensor& source, bool non_blocking) {
+        if (!should_chunk(destination, source)) {
+            destination.copy_(source, non_blocking);
+            return;
+        }
+
+        const int64_t element_size = static_cast<int64_t>(source.element_size());
+        const int64_t max_chunk_elements =
+            std::max<int64_t>(1, copy_state_.max_h2d_transfer_chunk_bytes / element_size);
+        const auto flat_source = source.view({-1});
+        const auto flat_destination = destination.view({-1});
+
+        for (int64_t offset = 0; offset < source.numel(); offset += max_chunk_elements) {
+            wait_for_in_flight_chunk();
+            const int64_t chunk_elements = std::min(max_chunk_elements, source.numel() - offset);
+            flat_destination.narrow(0, offset, chunk_elements)
+                .copy_(flat_source.narrow(0, offset, chunk_elements), non_blocking);
+            record_in_flight_chunk();
+        }
+    }
+
+   private:
+    bool should_chunk(const at::Tensor& destination, const at::Tensor& source) const {
+        return copy_state_.max_h2d_transfer_chunk_bytes > 0 && source.device().is_cpu() &&
+               destination.device().is_cuda() && source.is_contiguous() && destination.is_contiguous() &&
+               source.scalar_type() == destination.scalar_type() && source.numel() == destination.numel() &&
+               source.numel() > 0;
+    }
+
+    void wait_for_in_flight_chunk() {
+        if (!in_flight_chunk_.has_value() || in_flight_chunk_->ev == nullptr) {
+            return;
+        }
+        c10::cuda::CUDAGuard guard(static_cast<c10::DeviceIndex>(in_flight_chunk_->device_index));
+        const auto status = cudaEventSynchronize(in_flight_chunk_->ev);
+        if (status != cudaSuccess) {
+            throw std::runtime_error(std::string("cudaEventSynchronize failed while pacing H2D transfers: ") +
+                                     cudaGetErrorString(status));
+        }
+        in_flight_chunk_.reset();
+    }
+
+    void record_in_flight_chunk() {
+        const auto stream = *copy_state_.target_stream;
+        c10::cuda::CUDAGuard guard(stream.device_index());
+        cudaEvent_t event = nullptr;
+        auto status = cudaEventCreateWithFlags(&event, cudaEventDisableTiming);
+        if (status != cudaSuccess) {
+            throw std::runtime_error(
+                std::string("cudaEventCreateWithFlags failed while pacing H2D transfers: ") +
+                cudaGetErrorString(status));
+        }
+        status = cudaEventRecord(event, stream.stream());
+        if (status != cudaSuccess) {
+            cudaEventDestroy(event);
+            throw std::runtime_error(std::string("cudaEventRecord failed while pacing H2D transfers: ") +
+                                     cudaGetErrorString(status));
+        }
+        in_flight_chunk_.emplace(event, static_cast<int>(stream.device_index()));
+    }
+
+    CopyState& copy_state_;
+    std::optional<CudaEvent> in_flight_chunk_;
 };
 
 class CopyThreadPool {
@@ -678,9 +755,10 @@ static void fill_cpu_staging_buffers(CopyState& copy_state, const PackPlan& pack
     });
 }
 
-// Enqueue packed CPU->CUDA transfers (one H2D per chunk) and populate copy_state.outputs[i]
-// with GPU views/slices into the corresponding chunk's GPU buffer.
-static void enqueue_packed_transfer(CopyState& copy_state, const PackPlan& pack_plan) {
+// Allocate packed CUDA storage, create per-tensor output views, and append the corresponding
+// H2D transfer requests without submitting them.
+static void prepare_packed_transfers(CopyState& copy_state, const PackPlan& pack_plan,
+                                     std::vector<H2DTransferRequest>& transfer_requests) {
     if (!copy_state.target_device.is_cuda() || copy_state.packed_cpu_chunks.empty() ||
         !copy_state.target_stream.has_value()) {
         return;
@@ -693,7 +771,7 @@ static void enqueue_packed_transfer(CopyState& copy_state, const PackPlan& pack_
     auto gpu_opts = at::TensorOptions().dtype(at::kByte).device(copy_state.target_device);
     const int64_t alignment = packed_buffer_alignment_bytes(copy_state);
 
-    // Allocate GPU buffers and enqueue H2D copies for each chunk.
+    // Allocate all GPU buffers before any H2D transfer is submitted.
     const size_t num_chunks = pack_plan.chunk_sizes.size();
     std::vector<at::Tensor> gpu_chunks(num_chunks);
     std::vector<int64_t> gpu_base_offsets(num_chunks);
@@ -704,8 +782,8 @@ static void enqueue_packed_transfer(CopyState& copy_state, const PackPlan& pack_
         const int64_t base_off = aligned_slice_offset_bytes(gpu_full.data_ptr(), alignment);
         gpu_chunks[c] = gpu_full.narrow(0, base_off, chunk_bytes);
         gpu_base_offsets[c] = base_off;
-        gpu_chunks[c].copy_(copy_state.packed_cpu_chunks[c],
-                            /*non_blocking=*/copy_state.use_pinned_staging);
+        transfer_requests.push_back(H2DTransferRequest{gpu_chunks[c], copy_state.packed_cpu_chunks[c],
+                                                       copy_state.use_pinned_staging});
     }
 
     // Create per-tensor output views referencing the correct chunk's GPU storage.
@@ -726,6 +804,31 @@ static void enqueue_packed_transfer(CopyState& copy_state, const PackPlan& pack_
         auto out = at::empty({0}, in.options().device(copy_state.target_device));
         out.set_(gpu_chunks[chunk_idx].storage(), storage_off_elems, in.sizes(), in.strides());
         copy_state.outputs[i] = out;
+    }
+}
+
+// Allocate standalone CUDA outputs before paced H2D submission begins. Tensors already on
+// the target device are reused, and packed outputs were prepared by prepare_packed_transfers.
+static void allocate_cuda_target_outputs(CopyState& copy_state, const PackPlan& pack_plan) {
+    if (!copy_state.target_device.is_cuda() || !copy_state.target_stream.has_value()) {
+        return;
+    }
+
+    const auto target_stream = *copy_state.target_stream;
+    c10::cuda::CUDAGuard guard(target_stream.device_index());
+    at::cuda::CUDAStreamGuard stream_guard(target_stream);
+
+    for (size_t i = 0; i < copy_state.inputs.size(); ++i) {
+        if (pack_plan.byte_offset_by_input[i] >= 0) {
+            continue;
+        }
+        const auto& input = copy_state.inputs[i];
+        if (input.device() == copy_state.target_device) {
+            copy_state.outputs[i] = input;
+        } else {
+            copy_state.outputs[i] =
+                at::empty(input.sizes(), input.options().device(copy_state.target_device));
+        }
     }
 }
 
@@ -772,7 +875,8 @@ static void synchronize_source_streams(CopyState& copy_state) {
 // - *->CUDA: copies run on the captured target stream.  D2D is safe because
 //   synchronize_source_streams inserted the necessary cross-device event waits.
 //   Pinned staging enables non_blocking H2D.
-static void enqueue_per_tensor_transfers(CopyState& copy_state, const PackPlan& pack_plan) {
+static void enqueue_per_tensor_transfers(CopyState& copy_state, const PackPlan& pack_plan,
+                                         H2DTransferSubmitter& h2d_submitter) {
     for (size_t i = 0; i < copy_state.inputs.size(); ++i) {
         const auto& in = copy_state.inputs[i];
 
@@ -810,11 +914,15 @@ static void enqueue_per_tensor_transfers(CopyState& copy_state, const PackPlan& 
         at::cuda::CUDAStreamGuard stream_guard(target_stream);
         copy_state.target_stream_used = true;
 
-        copy_state.outputs[i] = at::empty(in.sizes(), in.options().device(copy_state.target_device));
+        if (!copy_state.outputs[i].defined()) {
+            throw std::runtime_error(
+                "Internal error: CUDA output was not allocated before transfer submission");
+        }
         if (copy_state.use_pinned_staging && in.device().is_cpu() && copy_state.pinned_buffers[i].defined()) {
-            copy_state.outputs[i].copy_(copy_state.pinned_buffers[i], /*non_blocking=*/true);
+            h2d_submitter.submit(copy_state.outputs[i], copy_state.pinned_buffers[i],
+                                 /*non_blocking=*/true);
         } else {
-            copy_state.outputs[i].copy_(in, /*non_blocking=*/in.device().is_cuda());
+            h2d_submitter.submit(copy_state.outputs[i], in, /*non_blocking=*/in.device().is_cuda());
         }
     }
 }
@@ -851,7 +959,8 @@ static void record_completion_events(CopyState& copy_state) {
 // Orchestrate the full copy scheduling:
 // - compute packing plan
 // - allocate + fill CPU staging buffers
-// - enqueue packed transfer (optional)
+// - allocate all CUDA outputs
+// - submit packed transfer requests (optional)
 // - synchronize all source CUDA streams (single sync point for D2H / D2D)
 // - enqueue remaining per-tensor transfers
 // - record completion events on streams that received work
@@ -874,11 +983,24 @@ static void schedule_copies(CopyState& copy_state) {
     allocate_staging_buffers(copy_state, pack_plan);
     fill_cpu_staging_buffers(copy_state, pack_plan);
 
+    std::vector<H2DTransferRequest> packed_transfer_requests;
     if (pack_plan.enabled) {
-        enqueue_packed_transfer(copy_state, pack_plan);
+        prepare_packed_transfers(copy_state, pack_plan, packed_transfer_requests);
+    }
+    allocate_cuda_target_outputs(copy_state, pack_plan);
+
+    H2DTransferSubmitter h2d_submitter(copy_state);
+    if (!packed_transfer_requests.empty()) {
+        const auto target_stream = *copy_state.target_stream;
+        c10::cuda::CUDAGuard guard(target_stream.device_index());
+        at::cuda::CUDAStreamGuard stream_guard(target_stream);
+        copy_state.target_stream_used = true;
+        for (const auto& request : packed_transfer_requests) {
+            h2d_submitter.submit(request.destination, request.source, request.non_blocking);
+        }
     }
     synchronize_source_streams(copy_state);
-    enqueue_per_tensor_transfers(copy_state, pack_plan);
+    enqueue_per_tensor_transfers(copy_state, pack_plan, h2d_submitter);
     record_completion_events(copy_state);
 }
 
@@ -1074,7 +1196,7 @@ class AsyncCopyHandle {
 static AsyncCopyHandle start_copy_impl(py::object data, const std::string& device, bool use_pinned_staging,
                                        bool use_background_thread, bool pack_cpu_tensors,
                                        int64_t min_packed_alignment_bytes, int64_t max_packed_chunk_bytes,
-                                       const PyConversionCtx& ctx) {
+                                       int64_t max_h2d_transfer_chunk_bytes, const PyConversionCtx& ctx) {
     auto copy_state = std::make_shared<CopyState>();
     Node root = traverse_build_tree_impl(data, ctx, copy_state->inputs);
     copy_state->target_device = parse_device(device);
@@ -1082,6 +1204,7 @@ static AsyncCopyHandle start_copy_impl(py::object data, const std::string& devic
     copy_state->pack_cpu_tensors = pack_cpu_tensors;
     copy_state->min_packed_alignment_bytes = std::max<int64_t>(1, min_packed_alignment_bytes);
     copy_state->max_packed_chunk_bytes = std::max<int64_t>(1, max_packed_chunk_bytes);
+    copy_state->max_h2d_transfer_chunk_bytes = std::max<int64_t>(0, max_h2d_transfer_chunk_bytes);
 
     // Capture the user's current CUDA streams while still on the caller's thread.
     // These are used later (potentially on a background thread) so that copy work is
@@ -1184,13 +1307,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "start_copy",
         [py_cache](py::object data, const std::string& device, bool use_pinned_staging,
                    bool use_background_thread, bool pack_cpu_tensors, int64_t min_packed_alignment_bytes,
-                   int64_t max_packed_chunk_bytes) {
+                   int64_t max_packed_chunk_bytes, int64_t max_h2d_transfer_chunk_bytes) {
             const PyConversionCtx ctx = make_py_conversion_ctx_from_cache(py_cache);
             return start_copy_impl(std::move(data), device, use_pinned_staging, use_background_thread,
-                                   pack_cpu_tensors, min_packed_alignment_bytes, max_packed_chunk_bytes, ctx);
+                                   pack_cpu_tensors, min_packed_alignment_bytes, max_packed_chunk_bytes,
+                                   max_h2d_transfer_chunk_bytes, ctx);
         },
         "Start an async copy of a nested list/tuple/dict of tensors to the given device (string).",
         py::arg("data"), py::arg("device"), py::arg("use_pinned_staging") = true,
         py::arg("use_background_thread") = true, py::arg("pack_cpu_tensors") = true,
-        py::arg("min_packed_alignment_bytes") = 16, py::arg("max_packed_chunk_bytes") = 32 * 1024 * 1024);
+        py::arg("min_packed_alignment_bytes") = 16, py::arg("max_packed_chunk_bytes") = 32 * 1024 * 1024,
+        py::arg("max_h2d_transfer_chunk_bytes") = 0);
 }

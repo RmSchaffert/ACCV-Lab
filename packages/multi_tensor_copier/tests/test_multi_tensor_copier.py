@@ -32,7 +32,12 @@ def _round_up(x: int, a: int) -> int:
     return x if rem == 0 else (x + (a - rem))
 
 
-def test_multi_tensor_copier_nested_structure_and_values():
+@pytest.mark.parametrize("max_h2d_transfer_chunk_bytes", [0, 16])
+@pytest.mark.parametrize("use_background_thread", [True, False])
+def test_multi_tensor_copier_nested_structure_and_values(
+    max_h2d_transfer_chunk_bytes: int,
+    use_background_thread: bool,
+):
     import accvlab.multi_tensor_copier as mtc
 
     device = torch.device("cuda:0")
@@ -49,8 +54,13 @@ def test_multi_tensor_copier_nested_structure_and_values():
         ),
     ]
 
-    # background-thread path (returns earlier; staging/submission happens off-thread).
-    h = mtc.start_copy(data, device, use_pinned_staging=True)
+    h = mtc.start_copy(
+        data,
+        device,
+        use_pinned_staging=True,
+        max_h2d_transfer_chunk_bytes=max_h2d_transfer_chunk_bytes,
+        use_background_thread=use_background_thread,
+    )
     out = h.get()
 
     assert isinstance(out, list)
@@ -124,26 +134,47 @@ def test_multi_tensor_copier_dict_and_passthrough_leaves():
     torch.testing.assert_close(out["b"][0].cpu(), torch.from_numpy(data["b"][0]))
 
 
-def test_multi_tensor_copier_root_leaf_behavior():
+@pytest.mark.parametrize("max_h2d_transfer_chunk_bytes", [0, 4096])
+@pytest.mark.parametrize("use_background_thread", [True, False])
+def test_multi_tensor_copier_root_tensor_and_passthrough(
+    max_h2d_transfer_chunk_bytes: int,
+    use_background_thread: bool,
+):
     import accvlab.multi_tensor_copier as mtc
 
     device = torch.device("cuda:0")
 
-    t = torch.arange(5, dtype=torch.int64)
-    h = mtc.start_copy(t, device)
+    # This tensor exceeds the packing threshold and exercises the standalone transfer path.
+    t = torch.arange(80_000, dtype=torch.float32)
+    h = mtc.start_copy(
+        t,
+        device,
+        pack_cpu_tensors=False,
+        max_h2d_transfer_chunk_bytes=max_h2d_transfer_chunk_bytes,
+        use_background_thread=use_background_thread,
+    )
     out = h.get()
     assert isinstance(out, torch.Tensor)
     assert out.device == device
     torch.testing.assert_close(out.cpu(), t)
 
     marker = object()
-    h2 = mtc.start_copy(marker, device)
+    h2 = mtc.start_copy(
+        marker,
+        device,
+        max_h2d_transfer_chunk_bytes=max_h2d_transfer_chunk_bytes,
+        use_background_thread=use_background_thread,
+    )
     out2 = h2.get()
     assert out2 is marker
 
 
 @pytest.mark.parametrize("use_pinned_staging", [True, False])
-def test_multi_tensor_copier_pack_cpu_tensors(use_pinned_staging: bool):
+@pytest.mark.parametrize("max_h2d_transfer_chunk_bytes", [0, 128])
+def test_multi_tensor_copier_pack_cpu_tensors(
+    use_pinned_staging: bool,
+    max_h2d_transfer_chunk_bytes: int,
+):
     import accvlab.multi_tensor_copier as mtc
 
     device = torch.device("cuda:0")
@@ -159,6 +190,7 @@ def test_multi_tensor_copier_pack_cpu_tensors(use_pinned_staging: bool):
         device,
         use_pinned_staging=use_pinned_staging,
         pack_cpu_tensors=True,
+        max_h2d_transfer_chunk_bytes=max_h2d_transfer_chunk_bytes,
     )
 
     out = h.get()
@@ -177,8 +209,11 @@ def test_multi_tensor_copier_pack_cpu_tensors(use_pinned_staging: bool):
 
 @pytest.mark.parametrize("min_packed_alignment_bytes", [1, 16, 6])
 @pytest.mark.parametrize("use_pinned_staging", [True, False])
+@pytest.mark.parametrize("max_h2d_transfer_chunk_bytes", [0, 32])
 def test_multi_tensor_copier_pack_cpu_tensors_mixed_dtypes_and_alignment(
-    min_packed_alignment_bytes: int, use_pinned_staging: bool
+    min_packed_alignment_bytes: int,
+    use_pinned_staging: bool,
+    max_h2d_transfer_chunk_bytes: int,
 ):
     import accvlab.multi_tensor_copier as mtc
 
@@ -204,6 +239,7 @@ def test_multi_tensor_copier_pack_cpu_tensors_mixed_dtypes_and_alignment(
         use_pinned_staging=use_pinned_staging,
         pack_cpu_tensors=True,
         min_packed_alignment_bytes=min_packed_alignment_bytes,
+        max_h2d_transfer_chunk_bytes=max_h2d_transfer_chunk_bytes,
     )
     out = h.get()
 
@@ -358,7 +394,11 @@ def test_multi_tensor_copier_mixed_devices(
 
 
 @pytest.mark.parametrize("use_pinned_staging", [True, False])
-def test_multi_tensor_copier_pack_chunked(use_pinned_staging: bool):
+@pytest.mark.parametrize("max_h2d_transfer_chunk_bytes", [0, 128])
+def test_multi_tensor_copier_pack_chunked(
+    use_pinned_staging: bool,
+    max_h2d_transfer_chunk_bytes: int,
+):
     """Packing with a tiny chunk size forces multiple chunks; verify correctness and distinct storages."""
     import accvlab.multi_tensor_copier as mtc
 
@@ -375,6 +415,7 @@ def test_multi_tensor_copier_pack_chunked(use_pinned_staging: bool):
         use_pinned_staging=use_pinned_staging,
         pack_cpu_tensors=True,
         max_packed_chunk_bytes=chunk_limit,
+        max_h2d_transfer_chunk_bytes=max_h2d_transfer_chunk_bytes,
     )
     out = h.get()
 
@@ -393,6 +434,18 @@ def test_multi_tensor_copier_pack_chunked(use_pinned_staging: bool):
         f"expected multiple GPU storage chunks but got {len(base_ptrs)}; "
         "chunking may not have been applied"
     )
+
+
+def test_multi_tensor_copier_rejects_negative_h2d_transfer_chunk_size():
+    """Transfer chunk size rejects negative values."""
+    import accvlab.multi_tensor_copier as mtc
+
+    with pytest.raises(ValueError, match="max_h2d_transfer_chunk_bytes"):
+        mtc.start_copy(
+            torch.arange(4),
+            "cuda:0",
+            max_h2d_transfer_chunk_bytes=-1,
+        )
 
 
 if __name__ == "__main__":
