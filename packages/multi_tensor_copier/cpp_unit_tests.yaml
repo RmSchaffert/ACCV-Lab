@@ -1,0 +1,6 @@
+# Native C++ unit test target for multi_tensor_copier.
+
+cmake_source_dir: cpp_tests
+cuda_arch_strategy: torch
+test_option: ACCVLAB_MULTI_TENSOR_COPIER_BUILD_CPP_TESTS
+test_target: accvlab_multi_tensor_copier_run_cpp_tests
