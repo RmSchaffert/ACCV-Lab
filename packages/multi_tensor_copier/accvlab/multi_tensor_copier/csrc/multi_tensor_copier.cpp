@@ -17,6 +17,8 @@
 #include <torch/extension.h>
 
 #include "copy_plan.h"
+#include "cuda_event.h"
+#include "h2d_transfer_submitter.h"
 
 #include <ATen/Parallel.h>
 #include <ATen/cuda/CUDAContext.h>
@@ -50,6 +52,8 @@ namespace {
 
 using accvlab::multi_tensor_copier::internal::aligned_slice_offset_bytes;
 using accvlab::multi_tensor_copier::internal::compute_pack_plan;
+using accvlab::multi_tensor_copier::internal::CudaEvent;
+using accvlab::multi_tensor_copier::internal::H2DTransferSubmitter;
 using accvlab::multi_tensor_copier::internal::packed_buffer_alignment_bytes;
 using accvlab::multi_tensor_copier::internal::PackPlan;
 
@@ -75,50 +79,6 @@ struct Node {
 
     size_t tensor_idx{0};
     py::object obj;
-};
-
-// Minimal RAII wrapper around a CUDA event.
-//
-// Events are used to track completion of all enqueued copies on a CUDA stream,
-// so `ready()` can poll and `get()` / destructor can wait before releasing
-// staging buffers.
-struct CudaEvent {
-    cudaEvent_t ev{nullptr};
-    int device_index{-1};
-
-    CudaEvent() = default;
-    CudaEvent(cudaEvent_t e, int dev) : ev(e), device_index(dev) {}
-
-    CudaEvent(const CudaEvent&) = delete;
-    CudaEvent& operator=(const CudaEvent&) = delete;
-
-    CudaEvent(CudaEvent&& other) noexcept {
-        ev = other.ev;
-        device_index = other.device_index;
-        other.ev = nullptr;
-        other.device_index = -1;
-    }
-    CudaEvent& operator=(CudaEvent&& other) noexcept {
-        if (this != &other) {
-            cleanup_no_throw();
-            ev = other.ev;
-            device_index = other.device_index;
-            other.ev = nullptr;
-            other.device_index = -1;
-        }
-        return *this;
-    }
-
-    ~CudaEvent() { cleanup_no_throw(); }
-
-    void cleanup_no_throw() noexcept {
-        if (ev != nullptr) {
-            // cudaEventDestroy does not require the Python GIL.
-            cudaEventDestroy(ev);
-            ev = nullptr;
-            device_index = -1;
-        }
-    }
 };
 
 struct PyConversionCtx {
@@ -297,75 +257,6 @@ struct H2DTransferRequest {
     at::Tensor destination;
     at::Tensor source;
     bool non_blocking{false};
-};
-
-class H2DTransferSubmitter {
-   public:
-    explicit H2DTransferSubmitter(CopyState& copy_state) : copy_state_(copy_state) {}
-
-    void submit(at::Tensor destination, const at::Tensor& source, bool non_blocking) {
-        if (!should_chunk(destination, source)) {
-            destination.copy_(source, non_blocking);
-            return;
-        }
-
-        const int64_t element_size = static_cast<int64_t>(source.element_size());
-        const int64_t max_chunk_elements =
-            std::max<int64_t>(1, copy_state_.max_h2d_transfer_chunk_bytes / element_size);
-        const auto flat_source = source.view({-1});
-        const auto flat_destination = destination.view({-1});
-
-        for (int64_t offset = 0; offset < source.numel(); offset += max_chunk_elements) {
-            wait_for_in_flight_chunk();
-            const int64_t chunk_elements = std::min(max_chunk_elements, source.numel() - offset);
-            flat_destination.narrow(0, offset, chunk_elements)
-                .copy_(flat_source.narrow(0, offset, chunk_elements), non_blocking);
-            record_in_flight_chunk();
-        }
-    }
-
-   private:
-    bool should_chunk(const at::Tensor& destination, const at::Tensor& source) const {
-        return copy_state_.max_h2d_transfer_chunk_bytes > 0 && source.device().is_cpu() &&
-               destination.device().is_cuda() && source.is_contiguous() && destination.is_contiguous() &&
-               source.scalar_type() == destination.scalar_type() && source.numel() == destination.numel() &&
-               source.numel() > 0;
-    }
-
-    void wait_for_in_flight_chunk() {
-        if (!in_flight_chunk_.has_value() || in_flight_chunk_->ev == nullptr) {
-            return;
-        }
-        c10::cuda::CUDAGuard guard(static_cast<c10::DeviceIndex>(in_flight_chunk_->device_index));
-        const auto status = cudaEventSynchronize(in_flight_chunk_->ev);
-        if (status != cudaSuccess) {
-            throw std::runtime_error(std::string("cudaEventSynchronize failed while pacing H2D transfers: ") +
-                                     cudaGetErrorString(status));
-        }
-        in_flight_chunk_.reset();
-    }
-
-    void record_in_flight_chunk() {
-        const auto stream = *copy_state_.target_stream;
-        c10::cuda::CUDAGuard guard(stream.device_index());
-        cudaEvent_t event = nullptr;
-        auto status = cudaEventCreateWithFlags(&event, cudaEventDisableTiming);
-        if (status != cudaSuccess) {
-            throw std::runtime_error(
-                std::string("cudaEventCreateWithFlags failed while pacing H2D transfers: ") +
-                cudaGetErrorString(status));
-        }
-        status = cudaEventRecord(event, stream.stream());
-        if (status != cudaSuccess) {
-            cudaEventDestroy(event);
-            throw std::runtime_error(std::string("cudaEventRecord failed while pacing H2D transfers: ") +
-                                     cudaGetErrorString(status));
-        }
-        in_flight_chunk_.emplace(event, static_cast<int>(stream.device_index()));
-    }
-
-    CopyState& copy_state_;
-    std::optional<CudaEvent> in_flight_chunk_;
 };
 
 class CopyThreadPool {
@@ -756,7 +647,7 @@ static void schedule_copies(CopyState& copy_state) {
     }
     allocate_cuda_target_outputs(copy_state, pack_plan);
 
-    H2DTransferSubmitter h2d_submitter(copy_state);
+    H2DTransferSubmitter h2d_submitter(copy_state.target_stream, copy_state.max_h2d_transfer_chunk_bytes);
     if (!packed_transfer_requests.empty()) {
         const auto target_stream = *copy_state.target_stream;
         c10::cuda::CUDAGuard guard(target_stream.device_index());

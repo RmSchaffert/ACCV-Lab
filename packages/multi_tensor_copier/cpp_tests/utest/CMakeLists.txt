@@ -36,17 +36,18 @@ set(ACCVLAB_MULTI_TENSOR_COPIER_CSRC_DIR
     "${CMAKE_CURRENT_LIST_DIR}/../../accvlab/multi_tensor_copier/csrc"
 )
 
-add_library(accvlab_multi_tensor_copier_copy_plan_test_impl STATIC EXCLUDE_FROM_ALL
+add_library(accvlab_multi_tensor_copier_native_test_impl STATIC EXCLUDE_FROM_ALL
     "${ACCVLAB_MULTI_TENSOR_COPIER_CSRC_DIR}/copy_plan.cpp"
+    "${ACCVLAB_MULTI_TENSOR_COPIER_CSRC_DIR}/h2d_transfer_submitter.cpp"
 )
 
-target_compile_options(accvlab_multi_tensor_copier_copy_plan_test_impl PRIVATE ${TORCH_CXX_FLAGS_LIST})
-target_include_directories(accvlab_multi_tensor_copier_copy_plan_test_impl PRIVATE
+target_compile_options(accvlab_multi_tensor_copier_native_test_impl PRIVATE ${TORCH_CXX_FLAGS_LIST})
+target_include_directories(accvlab_multi_tensor_copier_native_test_impl PRIVATE
     ${TORCH_INCLUDE_DIRS}
     ${CUDA_INCLUDE_DIRS}
     "${ACCVLAB_MULTI_TENSOR_COPIER_CSRC_DIR}"
 )
-target_link_libraries(accvlab_multi_tensor_copier_copy_plan_test_impl PRIVATE
+target_link_libraries(accvlab_multi_tensor_copier_native_test_impl PRIVATE
     ${TORCH_LIBRARIES}
     ${CUDA_LIBRARIES}
     ${TORCH_PYTHON_LIBRARY}
@@ -64,7 +65,7 @@ target_include_directories(multi_tensor_copier_copy_plan_test PRIVATE
 )
 target_link_libraries(multi_tensor_copier_copy_plan_test PRIVATE
     GTest::gtest_main
-    accvlab_multi_tensor_copier_copy_plan_test_impl
+    accvlab_multi_tensor_copier_native_test_impl
     ${TORCH_LIBRARIES}
     ${CUDA_LIBRARIES}
     ${TORCH_PYTHON_LIBRARY}
@@ -72,6 +73,32 @@ target_link_libraries(multi_tensor_copier_copy_plan_test PRIVATE
 
 add_test(NAME multi_tensor_copier_copy_plan_test COMMAND multi_tensor_copier_copy_plan_test)
 set_tests_properties(multi_tensor_copier_copy_plan_test PROPERTIES
+    LABELS "multi_tensor_copier_native"
+)
+
+add_executable(multi_tensor_copier_h2d_transfer_submitter_test EXCLUDE_FROM_ALL
+    h2d_transfer_submitter_test.cpp
+)
+
+target_compile_options(multi_tensor_copier_h2d_transfer_submitter_test PRIVATE ${TORCH_CXX_FLAGS_LIST})
+target_include_directories(multi_tensor_copier_h2d_transfer_submitter_test PRIVATE
+    ${TORCH_INCLUDE_DIRS}
+    ${CUDA_INCLUDE_DIRS}
+    "${ACCVLAB_MULTI_TENSOR_COPIER_CSRC_DIR}"
+)
+target_link_libraries(multi_tensor_copier_h2d_transfer_submitter_test PRIVATE
+    GTest::gtest_main
+    accvlab_multi_tensor_copier_native_test_impl
+    ${TORCH_LIBRARIES}
+    ${CUDA_LIBRARIES}
+    ${TORCH_PYTHON_LIBRARY}
+)
+
+add_test(
+    NAME multi_tensor_copier_h2d_transfer_submitter_test
+    COMMAND multi_tensor_copier_h2d_transfer_submitter_test
+)
+set_tests_properties(multi_tensor_copier_h2d_transfer_submitter_test PROPERTIES
     LABELS "multi_tensor_copier_native"
 )
 
@@ -85,7 +112,9 @@ add_custom_target(accvlab_multi_tensor_copier_run_cpp_tests
             --output-on-failure
             ${ACCVLAB_MULTI_TENSOR_COPIER_CTEST_CONFIG_ARGS}
             -L multi_tensor_copier_native
-    DEPENDS multi_tensor_copier_copy_plan_test
+    DEPENDS
+            multi_tensor_copier_copy_plan_test
+            multi_tensor_copier_h2d_transfer_submitter_test
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running multi_tensor_copier native tests"
     COMMAND_EXPAND_LISTS
