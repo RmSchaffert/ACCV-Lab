@@ -84,25 +84,28 @@ void H2DTransferSubmitter::wait_for_in_flight_chunk() {
         throw std::runtime_error(std::string("cudaEventSynchronize failed while pacing H2D transfers: ") +
                                  cudaGetErrorString(status));
     }
-    in_flight_chunk_.reset();
 }
 
 void H2DTransferSubmitter::record_in_flight_chunk() {
     const auto stream = *target_stream_;
     c10::cuda::CUDAGuard guard(stream.device_index());
-    cudaEvent_t event = nullptr;
-    auto status = cudaEventCreateWithFlags(&event, cudaEventDisableTiming);
-    if (status != cudaSuccess) {
-        throw std::runtime_error(std::string("cudaEventCreateWithFlags failed while pacing H2D transfers: ") +
-                                 cudaGetErrorString(status));
+    if (!in_flight_chunk_.has_value()) {
+        cudaEvent_t event = nullptr;
+        const auto status = cudaEventCreateWithFlags(&event, cudaEventDisableTiming);
+        if (status != cudaSuccess) {
+            throw std::runtime_error(
+                std::string("cudaEventCreateWithFlags failed while pacing H2D transfers: ") +
+                cudaGetErrorString(status));
+        }
+        in_flight_chunk_.emplace(event, static_cast<int>(stream.device_index()));
     }
-    status = cudaEventRecord(event, stream.stream());
+
+    const auto status = cudaEventRecord(in_flight_chunk_->ev, stream.stream());
     if (status != cudaSuccess) {
-        cudaEventDestroy(event);
+        in_flight_chunk_.reset();
         throw std::runtime_error(std::string("cudaEventRecord failed while pacing H2D transfers: ") +
                                  cudaGetErrorString(status));
     }
-    in_flight_chunk_.emplace(event, static_cast<int>(stream.device_index()));
 }
 
 }  // namespace accvlab::multi_tensor_copier::internal
