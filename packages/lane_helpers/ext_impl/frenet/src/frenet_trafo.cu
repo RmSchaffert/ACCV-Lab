@@ -4,6 +4,7 @@
 #include <mutex>
 
 #include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <c10/util/Half.h>
 #include <c10/util/BFloat16.h>
 #include <torch/torch.h>
@@ -48,6 +49,7 @@ void frenet_trafo_cuda(const at::Tensor& reference_lane_points, const at::Tensor
         return;
     }
 
+    const c10::cuda::CUDAGuard device_guard(reference_lane_points.device());
     const size_t max_default_shared_mem = default_shared_mem_for_device(reference_lane_points.get_device());
 
     constexpr int block_size = 256;

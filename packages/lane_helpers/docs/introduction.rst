@@ -50,6 +50,7 @@ The reference lane has shape ``(num_reference_points, 2)``, and the points to tr
 ``(num_points, 2)``. The returned tensor has shape ``(num_points, 2)``, with :math:`s` in the first column
 and :math:`d` in the second. The transformation is implemented both for the GPU and the CPU. Inputs can reside on a GPU or
 the CPU, but all tensors passed to one call must use the same device and data type.
+CPU supports ``float32`` and ``float64``; CUDA additionally supports ``float16`` and ``bfloat16``.
 
 By default, normals are derived from the reference-lane geometry. At interior lane vertices, normals from
 adjacent segments are combined to provide a consistent lateral direction. Applications that need to use other normals

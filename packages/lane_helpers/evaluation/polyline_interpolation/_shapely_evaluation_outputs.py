@@ -96,10 +96,12 @@ def write_batch_results(
     max_abs_diff_cpu: np.ndarray | None,
     max_abs_diff_cuda: np.ndarray | None,
     max_abs_diff_cuda_vs_cpu: np.ndarray | None,
+    *,
+    accv_precision: str,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     cuda_speedup_over_cpu = cpu_runtime_ms / cuda_runtime_ms
-    prefix = f"batch_{batch_size}"
+    prefix = f"batch_{batch_size}_{accv_precision}"
 
     def write_metric(
         metric_name: str,

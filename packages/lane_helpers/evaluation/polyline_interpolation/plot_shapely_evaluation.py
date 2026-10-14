@@ -434,6 +434,7 @@ def _write_comparison_outputs(
     *,
     has_shapely_results: bool,
     annotate_plots: bool,
+    accv_precision: str,
 ) -> list[Path]:
     runtime_metric_names = (
         _RUNTIME_METRICS_WITH_SHAPELY if has_shapely_results else _RUNTIME_METRICS_WITHOUT_SHAPELY
@@ -441,7 +442,7 @@ def _write_comparison_outputs(
     speedup_metric_names = (
         _SPEEDUP_METRICS_WITH_SHAPELY if has_shapely_results else _SPEEDUP_METRICS_WITHOUT_SHAPELY
     )
-    prefix = f"batch_{batch_size}"
+    prefix = f"batch_{batch_size}_{accv_precision}"
     plot_specs = [
         (
             runtime_metric_names,
@@ -481,8 +482,9 @@ def plot_batch_results_from_markdown(
     output_dir: Path,
     batch_size: int,
     annotate_plots: bool,
+    accv_precision: str = "float64",
 ) -> list[Path]:
-    prefix = f"batch_{batch_size}_"
+    prefix = f"batch_{batch_size}_{accv_precision}_"
     markdown_files = sorted(input_dir.glob(f"{prefix}*.md"))
     if not markdown_files:
         raise FileNotFoundError(f"No Markdown result tables found for batch={batch_size} in {input_dir}")
@@ -514,6 +516,7 @@ def plot_batch_results_from_markdown(
             metric_data,
             has_shapely_results=has_shapely_results,
             annotate_plots=annotate_plots,
+            accv_precision=accv_precision,
         )
     else:
         plotted_files = []
@@ -531,6 +534,7 @@ def plot_from_markdown_directory(
     output_dir: Path,
     batch_sizes: list[int],
     annotate_plots: bool = DEFAULT_ANNOTATE_PLOTS,
+    accv_precision: str = "float64",
 ) -> list[Path]:
     if not input_dir.exists():
         raise FileNotFoundError(f"Markdown input directory does not exist: {input_dir}")
@@ -542,6 +546,7 @@ def plot_from_markdown_directory(
             output_dir=output_dir,
             batch_size=batch_size,
             annotate_plots=annotate_plots,
+            accv_precision=accv_precision,
         )
         plotted_files.extend(batch_plotted_files)
     return plotted_files
@@ -569,6 +574,12 @@ def _parse_args() -> argparse.Namespace:
         default="1,4,16,64",
         help="Comma-separated batch sizes to plot.",
     )
+    parser.add_argument(
+        "--accv-precision",
+        choices=("float32", "float64"),
+        default="float64",
+        help="ACCV-Lab precision identifying the input tables and output plot filenames.",
+    )
     no_annotate_plots_action = parser.add_argument(
         "--no-annotate-plots",
         dest="annotate_plots",
@@ -588,6 +599,7 @@ def main() -> None:
         output_dir=args.output_dir,
         batch_sizes=batch_sizes,
         annotate_plots=args.annotate_plots,
+        accv_precision=args.accv_precision,
     )
     for plotted_file in plotted_files:
         print(f"Generated plot: {plotted_file}")

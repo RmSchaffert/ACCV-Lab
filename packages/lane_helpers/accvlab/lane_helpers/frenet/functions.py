@@ -30,6 +30,8 @@ def transform(
 
     Args:
         reference_lane_points: CPU or CUDA tensor with shape ``(num_reference_points, 2)``.
+            CPU supports ``float32`` and ``float64``; CUDA additionally supports ``float16``
+            and ``bfloat16``.
         points_to_transform: CPU or CUDA tensor with shape ``(num_points, 2)`` on the same device and
             with the same dtype as ``reference_lane_points``.
         per_segment_normals: Optional tensor with shape ``(num_reference_points - 1, 2)`` on the same

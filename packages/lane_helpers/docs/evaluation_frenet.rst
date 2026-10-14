@@ -33,7 +33,7 @@ Shapely uses double-precision coordinates. The solid blue line uses the prepared
 blue line includes reference preparation. ACCV-Lab also uses ``float64`` by default for a matched-precision
 comparison.
 
-.. figure:: _generated/frenet_runtime_evaluation/runtime_comparison.png
+.. figure:: _generated/frenet_runtime_evaluation/runtime_comparison_float64.png
    :alt: Frenet runtime comparison for reference lanes with 10 and 100 points
    :align: center
    :width: 100%
@@ -65,11 +65,12 @@ For example, run a smaller sweep with:
        --num-query-points 10,1000 \
        --num-reference-points 10 \
        --num-points-per-measurement 10000 \
-       --output-path /tmp/frenet_evaluation/results.csv \
-       --plot-path /tmp/frenet_evaluation/runtime_comparison.png
+       --output-path /tmp/frenet_evaluation/results_float64.csv \
+       --plot-path /tmp/frenet_evaluation/runtime_comparison_float64.png
 
 By default, the script writes
-``packages/lane_helpers/evaluation/frenet/frenet_eval_results/point_count_results.csv`` and
-``packages/lane_helpers/evaluation/frenet/frenet_eval_results/runtime_comparison.png``. Inspect the plot for
-the runtime trends and the CSV file for the configuration, number of measured runs, runtime, and maximum
-absolute difference of every result row.
+``packages/lane_helpers/evaluation/frenet/frenet_eval_results/point_count_results_float64.csv`` and
+``packages/lane_helpers/evaluation/frenet/frenet_eval_results/runtime_comparison_float64.png``.
+The default filenames use ``float32`` when that precision is selected; explicit output paths are used as given.
+Inspect the plot for the runtime trends and the CSV file for the configuration, number of measured runs,
+runtime, and maximum absolute difference of every result row.

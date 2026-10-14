@@ -691,6 +691,7 @@ def main() -> None:
             results.max_abs_diff_cpu,
             results.max_abs_diff_cuda,
             results.max_abs_diff_cuda_vs_cpu,
+            accv_precision=args.accv_precision,
         )
 
         # Print info.
@@ -740,6 +741,7 @@ def main() -> None:
         output_dir=args.output_dir,
         batch_sizes=batch_sizes,
         annotate_plots=args.annotate_plots,
+        accv_precision=args.accv_precision,
     )
     print(f"Generated {len(plotted_files)} plot image(s) from Markdown results.")
 

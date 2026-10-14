@@ -43,8 +43,7 @@ DEFAULT_ASSERT_ATOL_BY_PRECISION = {
     "float64": 1e-8,
 }
 DEFAULT_ASSERT_RTOL = 0.0
-DEFAULT_OUTPUT_PATH = Path("frenet_eval_results") / "point_count_results.csv"
-DEFAULT_PLOT_PATH = Path("frenet_eval_results") / "runtime_comparison.png"
+DEFAULT_OUTPUT_DIR = Path("frenet_eval_results")
 
 DTYPE_NP = np.float64
 DTYPE_TORCH_FLOAT64 = torch.float64
@@ -356,18 +355,22 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-path",
         type=Path,
-        default=DEFAULT_OUTPUT_PATH,
-        help="CSV output path.",
+        default=None,
+        help="CSV output path; defaults to frenet_eval_results/point_count_results_<precision>.csv.",
     )
     parser.add_argument(
         "--plot-path",
         type=Path,
-        default=DEFAULT_PLOT_PATH,
-        help="Runtime comparison plot output path.",
+        default=None,
+        help="Plot output path; defaults to frenet_eval_results/runtime_comparison_<precision>.png.",
     )
     args = parser.parse_args()
     if args.assert_atol is None:
         args.assert_atol = DEFAULT_ASSERT_ATOL_BY_PRECISION[args.accv_precision]
+    if args.output_path is None:
+        args.output_path = DEFAULT_OUTPUT_DIR / f"point_count_results_{args.accv_precision}.csv"
+    if args.plot_path is None:
+        args.plot_path = DEFAULT_OUTPUT_DIR / f"runtime_comparison_{args.accv_precision}.png"
     return args
 
 

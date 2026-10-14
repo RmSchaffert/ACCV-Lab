@@ -44,7 +44,7 @@ default, and other batch sizes can be easily added.
 
 Batch size 1 shows behavior for the smallest batch configuration in the benchmark:
 
-.. figure:: _generated/polyline_runtime_evaluation/batch_1_runtime_comparison.png
+.. figure:: _generated/polyline_runtime_evaluation/batch_1_float64_runtime_comparison.png
    :alt: Runtime comparison heatmaps for batch size 1
    :align: center
    :width: 100%
@@ -52,7 +52,7 @@ Batch size 1 shows behavior for the smallest batch configuration in the benchmar
    Runtime comparison between Shapely and ACCV-Lab ``float64`` for batch size 1. Rows vary the number of
    polyline points, and columns vary the number of sampled distances.
 
-.. figure:: _generated/polyline_runtime_evaluation/batch_1_speedup_comparison.png
+.. figure:: _generated/polyline_runtime_evaluation/batch_1_float64_speedup_comparison.png
    :alt: Speedup comparison heatmaps for batch size 1
    :align: center
    :width: 100%
@@ -62,14 +62,14 @@ Batch size 1 shows behavior for the smallest batch configuration in the benchmar
 For larger batch sizes, CUDA can expose more parallel work and its speedup over the other methods typically
 becomes more pronounced. Batch size 64 shows this behavior:
 
-.. figure:: _generated/polyline_runtime_evaluation/batch_64_runtime_comparison.png
+.. figure:: _generated/polyline_runtime_evaluation/batch_64_float64_runtime_comparison.png
    :alt: Runtime comparison heatmaps for batch size 64
    :align: center
    :width: 100%
 
    Runtime comparison between Shapely and ACCV-Lab ``float64`` for batch size 64.
 
-.. figure:: _generated/polyline_runtime_evaluation/batch_64_speedup_comparison.png
+.. figure:: _generated/polyline_runtime_evaluation/batch_64_float64_speedup_comparison.png
    :alt: Speedup comparison heatmaps for batch size 64
    :align: center
    :width: 100%
@@ -109,4 +109,7 @@ By default, outputs are written below
 ``packages/lane_helpers/evaluation/polyline_interpolation/polyline_shapely_eval_results``. The output directory
 contains Markdown tables for each runtime, speedup, and requested validation metric, together with runtime and
 speedup comparison plots for every batch size. Inspect the PNG files for an overview and the corresponding
-``batch_<batch-size>_<metric>.md`` files for the measured values in each point-count and distance-count cell.
+``batch_<batch-size>_<precision>_<metric>.md`` files for the measured values in each point-count and
+distance-count cell. Plot filenames also include the selected precision, so ``float32`` and ``float64``
+results can coexist in the same output directory. When regenerating plots with
+``plot_shapely_evaluation.py``, use ``--accv-precision`` to select the input precision (default: ``float64``).
