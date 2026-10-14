@@ -37,16 +37,25 @@ DEFAULT_NUM_WARMUP_RUNS = 3
 DEFAULT_WARMUP_NUM_QUERY_POINTS = 1_000
 DEFAULT_SINE_AMPLITUDE = 0.1
 DEFAULT_LATERAL_OFFSET = 0.02
-DEFAULT_ASSERT_ATOL = 1e-8
+DEFAULT_ACCV_PRECISION = "float64"
+DEFAULT_ASSERT_ATOL_BY_PRECISION = {
+    "float32": 1e-5,
+    "float64": 1e-8,
+}
 DEFAULT_ASSERT_RTOL = 0.0
-DEFAULT_ASSERT_FLOAT32_ATOL = 1e-5
-DEFAULT_ASSERT_FLOAT32_RTOL = 0.0
 DEFAULT_OUTPUT_PATH = Path("frenet_eval_results") / "point_count_results.csv"
 DEFAULT_PLOT_PATH = Path("frenet_eval_results") / "runtime_comparison.png"
 
 DTYPE_NP = np.float64
 DTYPE_TORCH_FLOAT64 = torch.float64
 DTYPE_TORCH_FLOAT32 = torch.float32
+
+
+def _torch_dtype_for_precision(accv_precision: str) -> torch.dtype:
+    return {
+        "float32": DTYPE_TORCH_FLOAT32,
+        "float64": DTYPE_TORCH_FLOAT64,
+    }[accv_precision]
 
 
 def _parse_int_list(value: str) -> list[int]:
@@ -130,24 +139,20 @@ def _run_configuration(
     num_query_points: int,
     lateral_offset: float,
     num_runs: int,
+    accv_precision: str,
+    accv_dtype: torch.dtype,
     assert_atol: float,
     assert_rtol: float,
-    assert_float32_atol: float,
-    assert_float32_rtol: float,
-) -> dict[str, float | int]:
+) -> dict[str, float | int | str]:
     from accvlab.lane_helpers import frenet
 
     query_points = _make_query_points(reference_lane_points, num_query_points, lateral_offset)
     shapely_points = make_shapely_points(query_points)
 
-    reference_cpu = torch.from_numpy(reference_lane_points).to(dtype=DTYPE_TORCH_FLOAT64)
-    query_cpu = torch.from_numpy(query_points).to(dtype=DTYPE_TORCH_FLOAT64)
+    reference_cpu = torch.from_numpy(reference_lane_points).to(dtype=accv_dtype)
+    query_cpu = torch.from_numpy(query_points).to(dtype=accv_dtype)
     reference_cuda = reference_cpu.cuda()
     query_cuda = query_cpu.cuda()
-    reference_cpu_float32 = reference_cpu.to(dtype=DTYPE_TORCH_FLOAT32)
-    query_cpu_float32 = query_cpu.to(dtype=DTYPE_TORCH_FLOAT32)
-    reference_cuda_float32 = reference_cpu_float32.cuda()
-    query_cuda_float32 = query_cpu_float32.cuda()
 
     shapely_call = lambda: shapely_frenet.transform(
         prepared_shapely_reference,
@@ -161,8 +166,6 @@ def _run_configuration(
     )
     cpu_call = lambda: frenet.transform(reference_cpu, query_cpu)
     cuda_call = lambda: frenet.transform(reference_cuda, query_cuda)
-    cpu_float32_call = lambda: frenet.transform(reference_cpu_float32, query_cpu_float32)
-    cuda_float32_call = lambda: frenet.transform(reference_cuda_float32, query_cuda_float32)
 
     shapely_result = shapely_call()
     shapely_unprepared_result = shapely_unprepared_call()
@@ -174,25 +177,12 @@ def _run_configuration(
     )
     cpu_result = cpu_call().numpy()
     cuda_result = cuda_call().cpu().numpy()
-    cpu_float32_result = cpu_float32_call().numpy()
-    cuda_float32_result = cuda_float32_call().cpu().numpy()
     max_abs_diff_cpu, max_abs_diff_cuda, max_abs_diff_cuda_vs_cpu = _validate_results(
         shapely_result,
         cpu_result,
         cuda_result,
         atol=assert_atol,
         rtol=assert_rtol,
-    )
-    (
-        max_abs_diff_cpu_float32,
-        max_abs_diff_cuda_float32,
-        max_abs_diff_cuda_float32_vs_cpu_float32,
-    ) = _validate_results(
-        shapely_result,
-        cpu_float32_result,
-        cuda_float32_result,
-        atol=assert_float32_atol,
-        rtol=assert_float32_rtol,
     )
 
     runtime_shapely_ms = (
@@ -227,45 +217,21 @@ def _run_configuration(
         )
         * 1_000.0
     )
-    runtime_cpu_float32_ms = (
-        _time_call(
-            cpu_float32_call,
-            num_runs=num_runs,
-            synchronize_cuda=False,
-        )
-        * 1_000.0
-    )
-    runtime_cuda_float32_ms = (
-        _time_call(
-            cuda_float32_call,
-            num_runs=num_runs,
-            synchronize_cuda=True,
-        )
-        * 1_000.0
-    )
-
     return {
         "num_reference_points": len(reference_lane_points),
         "num_query_points": num_query_points,
         "num_runs": num_runs,
+        "accv_precision": accv_precision,
         "runtime_shapely_ms": runtime_shapely_ms,
         "runtime_shapely_unprepared_ms": runtime_shapely_unprepared_ms,
         "runtime_cpu_ms": runtime_cpu_ms,
         "runtime_cuda_ms": runtime_cuda_ms,
-        "runtime_cpu_float32_ms": runtime_cpu_float32_ms,
-        "runtime_cuda_float32_ms": runtime_cuda_float32_ms,
         "speedup_cpu_vs_shapely": runtime_shapely_ms / runtime_cpu_ms,
         "speedup_cuda_vs_shapely": runtime_shapely_ms / runtime_cuda_ms,
         "speedup_cuda_vs_cpu": runtime_cpu_ms / runtime_cuda_ms,
-        "speedup_cpu_float32_vs_shapely": runtime_shapely_ms / runtime_cpu_float32_ms,
-        "speedup_cuda_float32_vs_shapely": runtime_shapely_ms / runtime_cuda_float32_ms,
-        "speedup_cuda_float32_vs_cpu_float32": runtime_cpu_float32_ms / runtime_cuda_float32_ms,
         "max_abs_diff_cpu_vs_shapely": max_abs_diff_cpu,
         "max_abs_diff_cuda_vs_shapely": max_abs_diff_cuda,
         "max_abs_diff_cuda_vs_cpu": max_abs_diff_cuda_vs_cpu,
-        "max_abs_diff_cpu_float32_vs_shapely": max_abs_diff_cpu_float32,
-        "max_abs_diff_cuda_float32_vs_shapely": max_abs_diff_cuda_float32,
-        "max_abs_diff_cuda_float32_vs_cpu_float32": max_abs_diff_cuda_float32_vs_cpu_float32,
     }
 
 
@@ -276,19 +242,16 @@ def _run_warmup(
     num_query_points: int,
     lateral_offset: float,
     num_runs: int,
+    accv_dtype: torch.dtype,
 ) -> None:
     from accvlab.lane_helpers import frenet
 
     query_points = _make_query_points(reference_lane_points, num_query_points, lateral_offset)
     shapely_points = make_shapely_points(query_points)
-    reference_cpu = torch.from_numpy(reference_lane_points)
-    query_cpu = torch.from_numpy(query_points)
+    reference_cpu = torch.from_numpy(reference_lane_points).to(dtype=accv_dtype)
+    query_cpu = torch.from_numpy(query_points).to(dtype=accv_dtype)
     reference_cuda = reference_cpu.cuda()
     query_cuda = query_cpu.cuda()
-    reference_cpu_float32 = reference_cpu.to(dtype=DTYPE_TORCH_FLOAT32)
-    query_cpu_float32 = query_cpu.to(dtype=DTYPE_TORCH_FLOAT32)
-    reference_cuda_float32 = reference_cpu_float32.cuda()
-    query_cuda_float32 = query_cpu_float32.cuda()
 
     for _ in range(num_runs):
         shapely_frenet.transform(
@@ -303,12 +266,10 @@ def _run_warmup(
         )
         frenet.transform(reference_cpu, query_cpu)
         frenet.transform(reference_cuda, query_cuda)
-        frenet.transform(reference_cpu_float32, query_cpu_float32)
-        frenet.transform(reference_cuda_float32, query_cuda_float32)
     torch.cuda.synchronize()
 
 
-def _write_csv(output_path: Path, results: list[dict[str, float | int]]) -> None:
+def _write_csv(output_path: Path, results: list[dict[str, float | int | str]]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8", newline="") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=list(results[0]))
@@ -316,16 +277,14 @@ def _write_csv(output_path: Path, results: list[dict[str, float | int]]) -> None
         writer.writerows(results)
 
 
-def _print_result(result: dict[str, float | int]) -> None:
+def _print_result(result: dict[str, float | int | str]) -> None:
     print(
         f"reference={result['num_reference_points']:>3}, "
         f"queries={result['num_query_points']:>6}, runs={result['num_runs']:>6}: "
         f"Shapely prepared={result['runtime_shapely_ms']:.6f} ms, "
         f"Shapely unprepared={result['runtime_shapely_unprepared_ms']:.6f} ms, "
-        f"CPU float64={result['runtime_cpu_ms']:.6f} ms, "
-        f"CPU float32={result['runtime_cpu_float32_ms']:.6f} ms, "
-        f"CUDA float64={result['runtime_cuda_ms']:.6f} ms, "
-        f"CUDA float32={result['runtime_cuda_float32_ms']:.6f} ms"
+        f"CPU {result['accv_precision']}={result['runtime_cpu_ms']:.6f} ms, "
+        f"CUDA {result['accv_precision']}={result['runtime_cuda_ms']:.6f} ms"
     )
 
 
@@ -377,28 +336,22 @@ def _parse_args() -> argparse.Namespace:
         help="Absolute normal offset of generated query points.",
     )
     parser.add_argument(
+        "--accv-precision",
+        choices=tuple(DEFAULT_ASSERT_ATOL_BY_PRECISION),
+        default=DEFAULT_ACCV_PRECISION,
+        help="Floating-point precision used by the ACCV-Lab CPU and CUDA implementations.",
+    )
+    parser.add_argument(
         "--assert-atol",
         type=float,
-        default=DEFAULT_ASSERT_ATOL,
-        help="Absolute tolerance for float64 result validation.",
+        default=None,
+        help="Absolute validation tolerance; defaults to a precision-appropriate value.",
     )
     parser.add_argument(
         "--assert-rtol",
         type=float,
         default=DEFAULT_ASSERT_RTOL,
-        help="Relative tolerance for float64 result validation.",
-    )
-    parser.add_argument(
-        "--assert-float32-atol",
-        type=float,
-        default=DEFAULT_ASSERT_FLOAT32_ATOL,
-        help="Absolute tolerance for float32 result validation.",
-    )
-    parser.add_argument(
-        "--assert-float32-rtol",
-        type=float,
-        default=DEFAULT_ASSERT_FLOAT32_RTOL,
-        help="Relative tolerance for float32 result validation.",
+        help="Relative validation tolerance.",
     )
     parser.add_argument(
         "--output-path",
@@ -412,11 +365,15 @@ def _parse_args() -> argparse.Namespace:
         default=DEFAULT_PLOT_PATH,
         help="Runtime comparison plot output path.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.assert_atol is None:
+        args.assert_atol = DEFAULT_ASSERT_ATOL_BY_PRECISION[args.accv_precision]
+    return args
 
 
 def main() -> None:
     args = _parse_args()
+    accv_dtype = _torch_dtype_for_precision(args.accv_precision)
     if not args.output_path.is_absolute():
         args.output_path = SCRIPT_DIR / args.output_path
     if not args.plot_path.is_absolute():
@@ -425,6 +382,7 @@ def main() -> None:
     print("Performing Frenet runtime evaluation...")
     print(f"Reference point counts: {args.num_reference_points}")
     print(f"Query point counts: {args.num_query_points}")
+    print(f"ACCV-Lab precision: {args.accv_precision}")
     print(f"Output path: {args.output_path}")
     print(f"Plot path: {args.plot_path}")
 
@@ -441,6 +399,7 @@ def main() -> None:
             num_query_points=args.warmup_num_query_points,
             lateral_offset=args.lateral_offset,
             num_runs=args.num_warmup_runs,
+            accv_dtype=accv_dtype,
         )
 
         for num_query_points in args.num_query_points:
@@ -451,10 +410,10 @@ def main() -> None:
                 num_query_points=num_query_points,
                 lateral_offset=args.lateral_offset,
                 num_runs=num_runs,
+                accv_precision=args.accv_precision,
+                accv_dtype=accv_dtype,
                 assert_atol=args.assert_atol,
                 assert_rtol=args.assert_rtol,
-                assert_float32_atol=args.assert_float32_atol,
-                assert_float32_rtol=args.assert_float32_rtol,
             )
             results.append(result)
             _print_result(result)

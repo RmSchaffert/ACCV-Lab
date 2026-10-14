@@ -19,7 +19,6 @@ from typing import Any
 _POLYLINE_RESULTS_SUBDIR = Path("evaluation_results") / "polyline_runtime_evaluation"
 _POLYLINE_GENERATED_IMAGE_SUBDIR = Path("polyline_runtime_evaluation")
 _DOC_BATCH_SIZES = [1, 64]
-_DOC_FLOAT64_BATCH_SIZES = _DOC_BATCH_SIZES
 _DOC_REQUIRED_MARKDOWN_METRICS = (
     "runtime_shapely",
     "runtime_cpu",
@@ -28,20 +27,9 @@ _DOC_REQUIRED_MARKDOWN_METRICS = (
     "speedup_cuda_vs_shapely",
     "speedup_cuda_vs_cpu",
 )
-_DOC_REQUIRED_FLOAT64_MARKDOWN_METRICS = (
-    "runtime_cpu_float64",
-    "runtime_cuda_float64",
-    "speedup_cpu_float64_vs_shapely",
-    "speedup_cuda_float64_vs_shapely",
-    "speedup_cuda_float64_vs_cpu_float64",
-)
 _DOC_REQUIRED_IMAGE_NAMES = tuple(
     f"batch_{batch_size}_{plot_kind}_comparison.png"
     for batch_size in _DOC_BATCH_SIZES
-    for plot_kind in ("runtime", "speedup")
-) + tuple(
-    f"batch_{batch_size}_{plot_kind}_float64_comparison.png"
-    for batch_size in _DOC_FLOAT64_BATCH_SIZES
     for plot_kind in ("runtime", "speedup")
 )
 _FRENET_RESULTS_PATH = Path("evaluation_results") / "frenet_runtime_evaluation" / "point_count_results.csv"
@@ -51,17 +39,11 @@ _FRENET_REFERENCE_POINT_COUNTS = [10, 100]
 
 
 def _required_markdown_paths(input_dir: Path) -> list[Path]:
-    primary_paths = [
+    return [
         input_dir / f"batch_{batch_size}_{metric_name}.md"
         for batch_size in _DOC_BATCH_SIZES
         for metric_name in _DOC_REQUIRED_MARKDOWN_METRICS
     ]
-    float64_paths = [
-        input_dir / f"batch_{batch_size}_{metric_name}.md"
-        for batch_size in _DOC_FLOAT64_BATCH_SIZES
-        for metric_name in _DOC_REQUIRED_FLOAT64_MARKDOWN_METRICS
-    ]
-    return primary_paths + float64_paths
 
 
 def _validate_required_markdown_inputs(input_dir: Path) -> None:

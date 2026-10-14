@@ -6,6 +6,9 @@ a Shapely-based reference while varying the number of Cartesian points to transf
 low-amplitude sine reference lanes with 10 and 100 points are evaluated. Query points are generated away from
 exact lane vertices so that each point has a unique projection inside one segment.
 
+Setup
+-----
+
 The Shapely reference first computes the longitudinal location of each closest point along the reference lane.
 NumPy then selects the corresponding geometry-derived segment normal and computes the signed lateral
 coordinate. The prepared Shapely measurement reuses the reference-lane geometry, while the unprepared
@@ -21,11 +24,14 @@ The reference implementation is kept separate from the evaluation driver:
 .. note::
 
    The following measurements are intended as directional guidance. They were generated on a system with an
-   ``NVIDIA RTX 5000 Ada Generation`` GPU and an ``AMD Ryzen 9 7950X`` 16-Core Processor.
+   ``NVIDIA A100-SXM4-80GB`` GPU and two ``AMD EPYC 7J13`` 64-Core Processors.
+
+Results
+-------
 
 Shapely uses double-precision coordinates. The solid blue line uses the prepared reference, and the dashed
-blue line includes reference preparation. Solid ACCV-Lab lines show float64 execution, while dotted lines in
-the same CPU or CUDA color show float32 execution.
+blue line includes reference preparation. ACCV-Lab also uses ``float64`` by default for a matched-precision
+comparison.
 
 .. figure:: _generated/frenet_runtime_evaluation/runtime_comparison.png
    :alt: Frenet runtime comparison for reference lanes with 10 and 100 points
@@ -33,13 +39,37 @@ the same CPU or CUDA color show float32 execution.
    :width: 100%
 
    Runtime per transformation call while varying the number of Cartesian points. Each panel compares prepared
-   and unprepared Shapely with float64 and float32 ACCV-Lab CPU and CUDA execution for one reference-lane size.
+   and unprepared Shapely with ACCV-Lab ``float64`` CPU and CUDA execution for one reference-lane size.
 
-Run the default evaluation from the repository root:
+Running the Experiments
+-----------------------
+
+Run the evaluation from the repository root in an environment with the evaluation dependencies installed,
+including a CUDA-capable PyTorch installation and the built ``lane_helpers`` package:
 
 .. code-block:: bash
 
    python packages/lane_helpers/evaluation/frenet/frenet_evaluation.py
 
-Use ``--num-query-points`` and ``--num-reference-points`` to select comma-separated point-count sweeps. Other
-command-line options control warmup and measurement work, validation tolerances, and CSV and plot output paths.
+The default sweep evaluates reference lanes with 10 and 100 points over several query-point counts. Use
+``--help`` to list all options. ``--num-query-points`` and ``--num-reference-points`` accept comma-separated
+point-count sweeps, while ``--num-points-per-measurement`` controls the amount of measured work. Use
+``--accv-precision`` to evaluate ACCV-Lab with ``float32`` instead. CPU and CUDA results are validated against
+Shapely for every configuration using the precision-appropriate tolerance.
+
+For example, run a smaller sweep with:
+
+.. code-block:: bash
+
+   python packages/lane_helpers/evaluation/frenet/frenet_evaluation.py \
+       --num-query-points 10,1000 \
+       --num-reference-points 10 \
+       --num-points-per-measurement 10000 \
+       --output-path /tmp/frenet_evaluation/results.csv \
+       --plot-path /tmp/frenet_evaluation/runtime_comparison.png
+
+By default, the script writes
+``packages/lane_helpers/evaluation/frenet/frenet_eval_results/point_count_results.csv`` and
+``packages/lane_helpers/evaluation/frenet/frenet_eval_results/runtime_comparison.png``. Inspect the plot for
+the runtime trends and the CSV file for the configuration, number of measured runs, runtime, and maximum
+absolute difference of every result row.

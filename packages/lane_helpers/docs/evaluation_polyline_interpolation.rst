@@ -6,17 +6,22 @@ reference over a grid of point counts, numbers of sampled distances, and batch s
 milliseconds per interpolation call, while speedup plots report the x-fold improvement over the Shapely
 reference.
 
-.. _polyline-interpolation-precision-discussion:
+Setup
+-----
 
-Shapely performs its geometry calculations in float64. The primary comparison uses ACCV-Lab float32 because
-float32 provides sufficient precision for most applications, while Shapely does not offer an equivalent
-float32 mode. For a precision-matched comparison, see the :ref:`polyline-interpolation-fp64-appendix`.
+Shapely performs its geometry calculations in ``float64``. The evaluation also uses ``float64`` for ACCV-Lab
+to provide a matched-precision comparison.
 
-.. seealso::
+.. note::
 
-   The evaluation script is available at
-   ``packages/lane_helpers/evaluation/polyline_interpolation/shapely_evaluation.py``. It can be used to run the
-   benchmark sweep for different problem sizes on your target system.
+   The following measurements are intended as directional guidance. Exact runtimes depend on the used system,
+   with performance primarily influenced by the CPU and GPU.
+
+   The plots shown here were generated on a system with an ``NVIDIA A100-SXM4-80GB`` GPU and two
+   ``AMD EPYC 7J13`` 64-Core Processors.
+
+Results
+-------
 
 Performance depends on the batch size for both CPU and CUDA execution. CUDA parallelism scales with the number
 of polylines in the batch, so very small batch sizes may not fully utilize the GPU.
@@ -27,14 +32,6 @@ Moving tensors only to use a different implementation can dominate the interpola
 
 The plots below focus on batch sizes 1 and 64 as examples. The evaluation script runs for more batch sizes by
 default, and other batch sizes can be easily added.
-
-.. note::
-
-   The following measurements are intended as directional guidance. Exact runtimes depend on the used system,
-   with performance primarily influenced by the CPU and GPU.
-
-   The plots shown here were generated on a system with an ``NVIDIA RTX 5000 Ada Generation`` GPU and an
-   ``AMD Ryzen 9 7950X`` 16-Core Processor.
 
 .. note::
 
@@ -52,7 +49,7 @@ Batch size 1 shows behavior for the smallest batch configuration in the benchmar
    :align: center
    :width: 100%
 
-   Runtime comparison between Shapely float64 and ACCV-Lab float32 for batch size 1. Rows vary the number of
+   Runtime comparison between Shapely and ACCV-Lab ``float64`` for batch size 1. Rows vary the number of
    polyline points, and columns vary the number of sampled distances.
 
 .. figure:: _generated/polyline_runtime_evaluation/batch_1_speedup_comparison.png
@@ -60,7 +57,7 @@ Batch size 1 shows behavior for the smallest batch configuration in the benchmar
    :align: center
    :width: 100%
 
-   Speedup comparison between Shapely float64 and ACCV-Lab float32 for batch size 1.
+   Speedup comparison between Shapely and ACCV-Lab ``float64`` for batch size 1.
 
 For larger batch sizes, CUDA can expose more parallel work and its speedup over the other methods typically
 becomes more pronounced. Batch size 64 shows this behavior:
@@ -70,53 +67,46 @@ becomes more pronounced. Batch size 64 shows this behavior:
    :align: center
    :width: 100%
 
-   Runtime comparison between Shapely float64 and ACCV-Lab float32 for batch size 64.
+   Runtime comparison between Shapely and ACCV-Lab ``float64`` for batch size 64.
 
 .. figure:: _generated/polyline_runtime_evaluation/batch_64_speedup_comparison.png
    :alt: Speedup comparison heatmaps for batch size 64
    :align: center
    :width: 100%
 
-   Speedup comparison between Shapely float64 and ACCV-Lab float32 for batch size 64.
+   Speedup comparison between Shapely and ACCV-Lab ``float64`` for batch size 64.
 
-.. _polyline-interpolation-fp64-appendix:
+Running the Experiments
+-----------------------
 
-Appendix: FP64 Comparison
--------------------------
+Run the evaluation from the repository root in an environment with the evaluation dependencies installed,
+including a CUDA-capable PyTorch installation and the built ``lane_helpers`` package:
 
-The following plots compare Shapely and ACCV-Lab with both using float64. This removes the precision
-difference from the primary comparison while retaining the same benchmark configurations.
+.. code-block:: bash
 
-.. note::
+   python packages/lane_helpers/evaluation/polyline_interpolation/shapely_evaluation.py
 
-   This comparison is primarily useful for evaluating matched-precision performance. See the
-   :ref:`discussion of the practical float32 comparison <polyline-interpolation-precision-discussion>` above
-   for why the primary plots use ACCV-Lab float32.
+The default sweep evaluates all configured point counts, sampled-distance counts, and batch sizes. It can take
+a long time because every combination is measured on CPU, CUDA, and Shapely. Use ``--help`` to list all
+options. In particular, ``--num-points``, ``--num-distances``, and ``--batch-sizes`` accept comma-separated
+sweeps, while ``--num-polylines-per-measurement`` controls the amount of measured work. Use
+``--accv-precision`` to evaluate ACCV-Lab with ``float32`` instead, and ``--assert-results`` to write numerical
+differences after validating CPU and CUDA outputs against Shapely.
 
-.. figure:: _generated/polyline_runtime_evaluation/batch_1_runtime_float64_comparison.png
-   :alt: Float64 runtime comparison heatmaps for batch size 1
-   :align: center
-   :width: 100%
+For example, run a smaller validation sweep with:
 
-   Runtime comparison between Shapely and ACCV-Lab float64 for batch size 1.
+.. code-block:: bash
 
-.. figure:: _generated/polyline_runtime_evaluation/batch_1_speedup_float64_comparison.png
-   :alt: Float64 speedup comparison heatmaps for batch size 1
-   :align: center
-   :width: 100%
+   python packages/lane_helpers/evaluation/polyline_interpolation/shapely_evaluation.py \
+       --num-points 10,100 \
+       --num-distances 10,100 \
+       --batch-sizes 1 \
+       --num-polylines-per-measurement 64 \
+       --assert-results \
+       --output-dir /tmp/polyline_evaluation
 
-   Speedup comparison between Shapely and ACCV-Lab float64 for batch size 1.
-
-.. figure:: _generated/polyline_runtime_evaluation/batch_64_runtime_float64_comparison.png
-   :alt: Float64 runtime comparison heatmaps for batch size 64
-   :align: center
-   :width: 100%
-
-   Runtime comparison between Shapely and ACCV-Lab float64 for batch size 64.
-
-.. figure:: _generated/polyline_runtime_evaluation/batch_64_speedup_float64_comparison.png
-   :alt: Float64 speedup comparison heatmaps for batch size 64
-   :align: center
-   :width: 100%
-
-   Speedup comparison between Shapely and ACCV-Lab float64 for batch size 64.
+By default, outputs are written below
+``packages/lane_helpers/evaluation/polyline_interpolation/polyline_shapely_eval_results``. The output directory
+contains Markdown tables for each runtime, speedup, and requested validation metric, together with runtime and
+speedup comparison plots for every batch size. Inspect the PNG files for an overview and the corresponding
+``batch_<batch-size>_<metric>.md`` files for the measured values in each point-count and distance-count cell.
